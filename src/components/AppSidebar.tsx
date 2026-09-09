@@ -18,12 +18,12 @@ interface NavItem {
   path: string;
   roles: string[];
 }
-
 const navItems: NavItem[] = [
   { label: 'Tableau de bord', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'manager', 'employee'] },
   { label: 'Pointage', icon: Clock, path: '/attendance', roles: ['admin', 'manager', 'employee'] },
   { label: 'Employés', icon: Users, path: '/employees', roles: ['admin', 'manager'] },
   { label: 'Sites', icon: MapPin, path: '/manager/sites', roles: ['manager'] },
+  { label: 'Gestion pointage',icon:Clock, path: '/manager/attendance', roles: ['manager'] },
   { label: 'Rapports', icon: BarChart3, path: '/reports', roles: ['admin', 'manager', 'employee'] },
   { label: 'Paramètres', icon: Settings, path: '/settings', roles: ['admin'] },
 ];
@@ -50,7 +50,7 @@ export default function AppSidebar() {
       <div className="flex items-center gap-3 px-5 py-5 border-b border-sidebar-border">
         <img src={guimsLogo} alt="Guims Group" className="w-9 h-9" />
         <div>
-          <h2 className="font-display text-sm font-bold text-sidebar-primary-foreground">GUIMS GROUP</h2>
+          <h2 className="font-display text-sm font-bold text-sidebar-primary-foreground">DasMAGISTER</h2>
           <p className="text-[10px] uppercase tracking-widest opacity-60">Gestion RH</p>
         </div>
       </div>

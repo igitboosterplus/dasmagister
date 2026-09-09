@@ -353,197 +353,213 @@ export default function Reports() {
    * ============================================================
    */
 
-  const handleSubmit = async (
-    e: React.FormEvent
-  ) => {
-    e.preventDefault();
+ const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
 
-    if (!profile) return;
+  alert('vous avez clicker');
 
-    if (!newReport.typeId) {
-      toast({
-        title: 'Type requis',
-        description:
-          'Veuillez sélectionner un type de rapport.',
-        variant: 'destructive',
-      });
+  if (!profile) {
+    toast({
+      title: 'Erreur',
+      description: 'Utilisateur non connecté.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
-      return;
-    }
+  if (!newReport.typeId) {
+    toast({
+      title: 'Type requis',
+      description: 'Veuillez sélectionner un type de rapport.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
-    if (!newReport.title.trim()) {
-      toast({
-        title: 'Titre requis',
-        description:
-          'Veuillez saisir le titre du rapport.',
-        variant: 'destructive',
-      });
+  if (!newReport.title.trim()) {
+    toast({
+      title: 'Titre requis',
+      description: 'Veuillez saisir le titre du rapport.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
-      return;
-    }
+  setSubmitting(true);
 
-    setSubmitting(true);
+  try {
+    console.log('=== CREATION RAPPORT ===');
+    console.log('profile:', profile);
+    console.log('role:', role);
+    console.log('employee_id:', profile.id);
+    console.log('manager_id:', profile.manager_id);
+    console.log('admin_id:', adminId);
+    console.log('report_type_id:', newReport.typeId);
 
-    try {
-      /**
-       * --------------------------------------------------------
-       * 1. Déterminer le destinataire
-       * --------------------------------------------------------
-       */
+    let recipientId: string | null = null;
 
-      let recipientId: string | null = null;
-
-      /**
-       * Employé :
-       * son rapport est envoyé à son manager.
-       */
-
-      if (role === 'employee') {
-        recipientId = profile.manager_id || null;
-
-        if (!recipientId) {
-          throw new Error(
-            'Aucun manager n’est associé à votre profil.'
-          );
-        }
-      }
-
-      /**
-       * Manager :
-       * son rapport est envoyé à l'administration.
-       */
-
-      if (role === 'manager') {
-        recipientId = adminId;
-
-        if (!recipientId) {
-          throw new Error(
-            'Aucun administrateur n’a été trouvé.'
-          );
-        }
-      }
-
-      /**
-       * Admin :
-       * on ne crée normalement pas de rapport depuis
-       * cette interface.
-       */
-
-      if (role === 'admin') {
+    // EMPLOYEE → MANAGER
+    if (role === 'employee') {
+      if (!profile.manager_id) {
         throw new Error(
-          'L’administrateur ne peut pas soumettre de rapport depuis cette interface.'
+          'Votre compte n’est associé à aucun manager.'
         );
       }
 
-      /**
-       * --------------------------------------------------------
-       * 2. Upload fichier
-       * --------------------------------------------------------
-       */
+      recipientId = profile.manager_id;
+    }
 
-      let fileUrl: string | null = null;
-
-      if (newReport.file) {
-        const file = newReport.file;
-
-        const fileExtension =
-          file.name.split('.').pop();
-
-        const fileName = `${crypto.randomUUID()}.${
-          fileExtension || 'file'
-        }`;
-
-        const filePath = `reports/${profile.id}/${fileName}`;
-
-        const { error: uploadError } =
-          await supabase.storage
-            .from('reports')
-            .upload(filePath, file, {
-              cacheControl: '3600',
-              upsert: false,
-            });
-
-        if (uploadError) {
-          throw uploadError;
-        }
-
-        /**
-         * Si ton bucket est public, on récupère
-         * l'URL publique.
-         *
-         * Si ton bucket est privé, il faudra plutôt
-         * stocker filePath et générer une signed URL
-         * lors de l'affichage.
-         */
-
-        const { data: publicUrlData } =
-          supabase.storage
-            .from('reports')
-            .getPublicUrl(filePath);
-
-        fileUrl =
-          publicUrlData.publicUrl;
+    // MANAGER → ADMIN
+    if (role === 'manager') {
+      if (!adminId) {
+        throw new Error(
+          'Aucun administrateur n’a été trouvé.'
+        );
       }
 
-      /**
-       * --------------------------------------------------------
-       * 3. Création du rapport
-       * --------------------------------------------------------
-       */
+      recipientId = adminId;
+    }
 
-      const { error: insertError } =
-        await supabase
+    // ADMIN
+    if (role === 'admin') {
+      throw new Error(
+        'Un administrateur ne peut pas envoyer de rapport depuis cette interface.'
+      );
+    }
+
+    let fileUrl: string | null = null;
+
+    // ==========================================
+    // UPLOAD
+    // ==========================================
+
+    if (newReport.file) {
+      const file = newReport.file;
+
+      const extension =
+        file.name.includes('.')
+          ? file.name.split('.').pop()
+          : 'file';
+
+      const fileName =
+        `${crypto.randomUUID()}.${extension}`;
+
+      const filePath =
+        `${profile.id}/${fileName}`;
+
+      console.log('Upload fichier:', filePath);
+
+      const { error: uploadError } =
+        await supabase.storage
           .from('reports')
-          .insert({
-            employee_id: profile.id,
-            report_type_id: newReport.typeId,
-            title: newReport.title.trim(),
-            description:
-              newReport.description.trim() ||
-              null,
-            file_url: fileUrl,
-            recipient_id: recipientId,
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: false,
           });
 
-      if (insertError) {
-        throw insertError;
+      if (uploadError) {
+        console.error(
+          'Erreur upload:',
+          uploadError
+        );
+
+        throw new Error(
+          `Impossible d'envoyer la pièce jointe : ${uploadError.message}`
+        );
       }
 
-      toast({
-        title: 'Rapport envoyé',
-        description:
-          role === 'employee'
-            ? 'Votre rapport a été envoyé à votre manager.'
-            : 'Votre rapport a été envoyé à l’administration.',
-      });
+      const {
+        data: publicUrlData,
+      } = supabase.storage
+        .from('reports')
+        .getPublicUrl(filePath);
 
-      setNewReport({
-        title: '',
-        description: '',
-        typeId: '',
-        file: null,
-      });
+      fileUrl =
+        publicUrlData.publicUrl;
+    }
 
-      setIsCreating(false);
+    // ==========================================
+    // INSERT REPORT
+    // ==========================================
 
-      await loadReports();
-    } catch (error: any) {
+    const payload = {
+      employee_id: profile.id,
+      report_type_id: newReport.typeId,
+      title: newReport.title.trim(),
+      description:
+        newReport.description.trim() || null,
+      file_url: fileUrl,
+      recipient_id: recipientId,
+    };
+
+    console.log(
+      'Payload rapport:',
+      payload
+    );
+
+    const {
+      data,
+      error: insertError,
+    } = await supabase
+      .from('reports')
+      .insert(payload)
+      .select()
+      .single();
+
+    if (insertError) {
       console.error(
-        'Erreur création rapport:',
-        error
+        'Erreur INSERT reports:',
+        insertError
       );
 
-      toast({
-        title: 'Erreur',
-        description:
-          error?.message ||
-          'Impossible de créer le rapport.',
-        variant: 'destructive',
-      });
-    } finally {
-      setSubmitting(false);
+      throw new Error(
+        `Impossible de créer le rapport : ${insertError.message}`
+      );
     }
-  };
+
+    console.log(
+      'Rapport créé:',
+      data
+    );
+
+    toast({
+      title: 'Rapport envoyé',
+      description:
+        role === 'employee'
+          ? 'Votre rapport a été envoyé à votre manager.'
+          : 'Votre rapport a été envoyé à l’administration.',
+    });
+
+    setNewReport({
+      title: '',
+      description: '',
+      typeId: '',
+      file: null,
+    });
+
+    setIsCreating(false);
+
+    await loadReports();
+
+  } catch (error: any) {
+
+    console.error(
+      'ERREUR COMPLETE CREATION RAPPORT:',
+      error
+    );
+
+    toast({
+      title: 'Échec de l’envoi',
+      description:
+        error?.message ||
+        'Impossible de créer le rapport.',
+      variant: 'destructive',
+    });
+
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   /**
    * ============================================================
@@ -1030,11 +1046,11 @@ export default function Reports() {
 
                   <Button
                     type="submit"
-                    disabled={
-                      submitting ||
-                      !newReport.typeId ||
-                      !newReport.title.trim()
-                    }
+                    // disabled={
+                    //   submitting ||
+                    //   !newReport.typeId ||
+                    //   !newReport.title.trim()
+                    // }
                   >
                     {submitting ? (
                       <>

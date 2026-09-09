@@ -17,6 +17,8 @@ import Dashmanager from "./pages/Dasboard/manager";
 import Dashemployer from "./pages/Dasboard/employer";
 import ManagerSites from "./pages/Dasboard/ManagerSites";
 
+import ManagerAttendanceReview from './pages/managerAttence';
+
 import Profile from "./pages/profil";
 
 const queryClient = new QueryClient();
@@ -28,7 +30,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <AuthProvider>
-          <Routes>
+          <Routes> 
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -43,6 +45,7 @@ const App = () => (
             <Route path="/employees" element={<Employees />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/manager/attendance" element={<ManagerAttendanceReview />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>

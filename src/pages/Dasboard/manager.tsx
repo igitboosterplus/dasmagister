@@ -143,23 +143,11 @@ export default function DashboardManager() {
          * ======================================================
          */
 
-        const today =
-          new Date()
-            .toISOString()
-            .split('T')[0];
+        const today = new Date().toISOString().split('T')[0];
 
         const attendanceRes = await supabase
           .from('attendances')
-          .select(`
-            id,
-            employee_id,
-            check_in,
-            check_out,
-            attendance_date,
-            sites (
-              work_start
-            )
-          `)
+          .select('id, employee_id, check_in, validation_status')
           .eq('attendance_date', today)
           .in('employee_id', employeeIds);
 
@@ -167,8 +155,7 @@ export default function DashboardManager() {
           throw attendanceRes.error;
         }
 
-        const attendances =
-          attendanceRes.data || [];
+        const attendances = attendanceRes.data || [];
 
 
         /*
@@ -180,102 +167,15 @@ export default function DashboardManager() {
         let present = 0;
         let late = 0;
 
-        /*
-         * Protection contre les doublons éventuels :
-         * un employé ne doit compter qu'une seule fois
-         * dans les présents.
-         */
-
-        const processedEmployees =
-          new Set<string>();
-
+        const processedEmployees = new Set<string>();
 
         for (const attendance of attendances) {
-
-          /*
-           * Pas de check-in = pas présent.
-           */
-
-          if (!attendance.check_in) {
-            continue;
-          }
-
-
-          /*
-           * Évite de compter deux fois le même employé
-           * si plusieurs enregistrements existent.
-           */
-
-          if (
-            processedEmployees.has(
-              attendance.employee_id
-            )
-          ) {
-            continue;
-          }
-
-          processedEmployees.add(
-            attendance.employee_id
-          );
-
+          if (!attendance.check_in) continue;
+          if (processedEmployees.has(attendance.employee_id)) continue;
+          processedEmployees.add(attendance.employee_id);
           present++;
-
-
-          /*
-           * ====================================================
-           * CALCUL DU RETARD
-           * ====================================================
-           */
-
-          const checkInDate =
-            new Date(attendance.check_in);
-
-
-          /*
-           * Heure de début par défaut.
-           */
-
-          let workStart = '08:00:00';
-
-
-          /*
-           * Si le site possède une heure de début,
-           * on l'utilise.
-           */
-
-          const site = Array.isArray(
-            attendance.sites
-          )
-            ? attendance.sites[0]
-            : attendance.sites;
-
-          if (site?.work_start) {
-            workStart = site.work_start;
-          }
-
-
-          const [
-            startHour,
-            startMinute,
-          ] = workStart
-            .split(':')
-            .map(Number);
-
-
-          const limit =
-            new Date(
-              checkInDate.getFullYear(),
-              checkInDate.getMonth(),
-              checkInDate.getDate(),
-              startHour,
-              startMinute,
-              0
-            );
-
-
-          if (checkInDate > limit) {
-            late++;
-          }
+          // La V3 calcule le retard côté serveur dans la RPC clock_in
+          if (attendance.validation_status === 'late') late++;
         }
 
 
@@ -314,7 +214,7 @@ export default function DashboardManager() {
 
         setError(
           err?.message ||
-            'Impossible de charger les données du tableau de bord.'
+          'Impossible de charger les données du tableau de bord.'
         );
 
       } finally {
@@ -334,26 +234,26 @@ export default function DashboardManager() {
   // ACCÈS NON AUTORISÉ
   // ==========================================================
 
-//   if (role !== 'manager') {
-//     return (
-//       <DashboardLayout>
+  //   if (role !== 'manager') {
+  //     return (
+  //       <DashboardLayout>
 
-//         <div className="
-//           flex
-//           items-center
-//           justify-center
-//           py-20
-//         ">
+  //         <div className="
+  //           flex
+  //           items-center
+  //           justify-center
+  //           py-20
+  //         ">
 
-//           <p className="text-muted-foreground">
-//             Cette page est réservée aux managers.
-//           </p>
+  //           <p className="text-muted-foreground">
+  //             Cette page est réservée aux managers.
+  //           </p>
 
-//         </div>
+  //         </div>
 
-//       </DashboardLayout>
-//     );
-//   }
+  //       </DashboardLayout>
+  //     );
+  //   }
 
 
 
@@ -647,10 +547,10 @@ export default function DashboardManager() {
 
                   {stats.totalEmployees > 0
                     ? Math.round(
-                        (stats.presentToday /
-                          stats.totalEmployees) *
-                          100
-                      )
+                      (stats.presentToday /
+                        stats.totalEmployees) *
+                      100
+                    )
                     : 0}
                   %
 
@@ -675,16 +575,15 @@ export default function DashboardManager() {
                     transition-all
                   "
                   style={{
-                    width: `${
-                      stats.totalEmployees > 0
+                    width: `${stats.totalEmployees > 0
                         ? Math.min(
-                            (stats.presentToday /
-                              stats.totalEmployees) *
-                              100,
-                            100
-                          )
+                          (stats.presentToday /
+                            stats.totalEmployees) *
+                          100,
+                          100
+                        )
                         : 0
-                    }%`,
+                      }%`,
                   }}
                 />
 

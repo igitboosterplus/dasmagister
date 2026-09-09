@@ -31,18 +31,7 @@ interface Attendance {
   attendance_date: string;
   check_in: string | null;
   check_out: string | null;
-  sites?: {
-    name?: string;
-    work_start?: string | null;
-    work_end?: string | null;
-  } | null;
-}
-
-interface Site {
-  id: string;
-  name: string;
-  work_start: string | null;
-  work_end: string | null;
+  validation_status?: string | null;
 }
 
 export default function Dashboardemployee() {
@@ -51,7 +40,7 @@ export default function Dashboardemployee() {
   const [todayAttendance, setTodayAttendance] =
     useState<Attendance | null>(null);
 
-  const [site, setSite] = useState<Site | null>(null);
+  const [siteName, setSiteName] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -96,74 +85,37 @@ export default function Dashboardemployee() {
     try {
       setLoading(true);
 
-      const today = new Date()
-        .toISOString()
-        .split('T')[0];
+      const today = new Date().toISOString().split('T')[0];
 
-      /**
-       * Récupération du pointage du jour
-       */
-      const { data: attendance, error: attendanceError } =
-        await supabase
-          .from('attendances')
-          .select(
-            `
-              id,
-              employee_id,
-              attendance_date,
-              check_in,
-              check_out,
-              sites (
-                name,
-                work_start,
-                work_end
-              )
-            `
-          )
-          .eq('employee_id', profile.id)
-          .eq('attendance_date', today)
-          .maybeSingle();
+      // Pointage du jour
+      const { data: attendance, error: attendanceError } = await supabase
+        .from('attendances')
+        .select('id, employee_id, attendance_date, check_in, check_out, validation_status')
+        .eq('employee_id', profile.id)
+        .eq('attendance_date', today)
+        .maybeSingle();
 
       if (attendanceError) {
-        console.error(
-          'Erreur récupération pointage:',
-          attendanceError
-        );
+        console.error('Erreur récupération pointage:', attendanceError);
       }
 
-      setTodayAttendance(
-        attendance as Attendance | null
-      );
+      setTodayAttendance(attendance as Attendance | null);
 
-      /**
-       * Récupération du site de l'employé
-       */
-      if (profile.site_id) {
-        const { data: employeeSite, error: siteError } =
-          await supabase
-            .from('sites')
-            .select(
-              'id, name, work_start, work_end'
-            )
-            .eq('id', profile.site_id)
-            .maybeSingle();
+      // Premier site actif de l'employé (V3 multi-sites)
+      const { data: esData } = await supabase
+        .from('employee_sites')
+        .select('sites ( name )')
+        .eq('employee_id', profile.id)
+        .eq('is_active', true)
+        .order('assigned_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-        if (siteError) {
-          console.error(
-            'Erreur récupération site:',
-            siteError
-          );
-        }
+      const siteObj = esData?.sites as any;
+      setSiteName(siteObj?.name ?? null);
 
-        setSite(employeeSite as Site | null);
-      } else {
-        setSite(null);
-      }
     } catch (error) {
-      console.error(
-        'Erreur récupération dashboard:',
-        error
-      );
+      console.error('Erreur récupération dashboard:', error);
     } finally {
       setLoading(false);
     }
@@ -213,41 +165,8 @@ export default function Dashboardemployee() {
    * CALCUL DU RETARD
    * ============================================================
    */
-  const calculateLateMinutes = () => {
-    if (
-      !todayAttendance?.check_in ||
-      !site?.work_start
-    ) {
-      return 0;
-    }
-
-    const checkIn = new Date(
-      todayAttendance.check_in
-    );
-
-    const [hours, minutes] = site.work_start
-      .split(':')
-      .map(Number);
-
-    const expectedStart = new Date(checkIn);
-
-    expectedStart.setHours(
-      hours,
-      minutes,
-      0,
-      0
-    );
-
-    const difference =
-      checkIn.getTime() -
-      expectedStart.getTime();
-
-    const lateMinutes = Math.floor(
-      difference / 60000
-    );
-
-    return lateMinutes > 0 ? lateMinutes : 0;
-  };
+  // La V3 indique si l'employé est en retard via validation_status='late'
+  const isLate = todayAttendance?.validation_status === 'late';
 
   /**
    * ============================================================
@@ -347,101 +266,53 @@ export default function Dashboardemployee() {
     try {
       setActionLoading(true);
 
-      const today = new Date()
-        .toISOString()
-        .split('T')[0];
-
-      /**
-       * ARRIVÉE
-       */
       if (!todayAttendance?.check_in) {
-        const { data, error } =
-          await supabase
-            .from('attendances')
-            .insert({
-              employee_id: profile.id,
-              attendance_date: today,
-              check_in: new Date().toISOString(),
-              site_id: profile.site_id,
-            })
-            .select(
-              `
-                id,
-                employee_id,
-                attendance_date,
-                check_in,
-                check_out,
-                sites (
-                  name,
-                  work_start,
-                  work_end
-                )
-              `
-            )
-            .single();
+        // ARRIVÉE — utilise la RPC V3
+        const { data: attendanceId, error } = await supabase.rpc('clock_in', {
+          p_latitude: null,
+          p_longitude: null,
+          p_accuracy: null,
+          p_client_event_id: crypto.randomUUID(),
+          p_device_recorded_at: null,
+        });
 
         if (error) {
-          console.error(
-            'Erreur pointage arrivée:',
-            error
-          );
-
+          console.error('Erreur pointage arrivée:', error);
           return;
         }
 
-        setTodayAttendance(
-          data as Attendance
-        );
-
+        if (attendanceId) {
+          const { data: rec } = await supabase
+            .from('attendances')
+            .select('id, employee_id, attendance_date, check_in, check_out, validation_status')
+            .eq('id', attendanceId)
+            .single();
+          setTodayAttendance(rec as Attendance);
+        }
         return;
       }
 
-      /**
-       * SORTIE
-       */
-      if (
-        todayAttendance.check_in &&
-        !todayAttendance.check_out
-      ) {
-        const { data, error } =
-          await supabase
-            .from('attendances')
-            .update({
-              check_out:
-                new Date().toISOString(),
-            })
-            .eq(
-              'id',
-              todayAttendance.id
-            )
-            .select(
-              `
-                id,
-                employee_id,
-                attendance_date,
-                check_in,
-                check_out,
-                sites (
-                  name,
-                  work_start,
-                  work_end
-                )
-              `
-            )
-            .single();
+      if (todayAttendance.check_in && !todayAttendance.check_out) {
+        // SORTIE — utilise la RPC V3
+        const { error } = await supabase.rpc('clock_out', {
+          p_latitude: null,
+          p_longitude: null,
+          p_accuracy: null,
+          p_client_event_id: crypto.randomUUID(),
+          p_device_recorded_at: null,
+        });
 
         if (error) {
-          console.error(
-            'Erreur pointage sortie:',
-            error
-          );
-
+          console.error('Erreur pointage sortie:', error);
           return;
         }
 
-        setTodayAttendance(
-          data as Attendance
-        );
+        const { data: rec } = await supabase
+          .from('attendances')
+          .select('id, employee_id, attendance_date, check_in, check_out, validation_status')
+          .eq('id', todayAttendance.id)
+          .single();
+        setTodayAttendance(rec as Attendance);
       }
     } finally {
       setActionLoading(false);
@@ -617,11 +488,7 @@ export default function Dashboardemployee() {
                 )}
               </p>
 
-              {site?.work_start && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Horaire prévu : {site.work_start}
-                </p>
-              )}
+
             </CardContent>
           </Card>
 
@@ -642,11 +509,7 @@ export default function Dashboardemployee() {
                 )}
               </p>
 
-              {site?.work_end && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Horaire prévu : {site.work_end}
-                </p>
-              )}
+
             </CardContent>
           </Card>
 
@@ -678,7 +541,7 @@ export default function Dashboardemployee() {
                 Retard
               </CardTitle>
 
-              {calculateLateMinutes() > 0 ? (
+              {isLate ? (
                 <AlertTriangle className="h-5 w-5 text-warning" />
               ) : (
                 <CheckCircle className="h-5 w-5 text-success" />
@@ -687,13 +550,11 @@ export default function Dashboardemployee() {
 
             <CardContent>
               <p className="font-display text-3xl font-bold">
-                {calculateLateMinutes()} min
+                {isLate ? '⚠️' : '✅'}
               </p>
 
               <p className="mt-1 text-xs text-muted-foreground">
-                {calculateLateMinutes() > 0
-                  ? 'Retard enregistré'
-                  : 'Aucun retard'}
+                {isLate ? 'Retard enregistré' : 'Aucun retard'}
               </p>
             </CardContent>
           </Card>
@@ -741,8 +602,7 @@ export default function Dashboardemployee() {
                   </p>
 
                   <p className="font-medium">
-                    {site?.name ??
-                      'Site non renseigné'}
+                    {siteName ?? 'Site non renseigné'}
                   </p>
                 </div>
               </div>
@@ -785,8 +645,7 @@ export default function Dashboardemployee() {
                   </p>
 
                   <p className="mt-1 text-2xl font-bold">
-                    {site?.work_start ??
-                      '--:--'}
+                    --:--
                   </p>
                 </div>
 
@@ -796,14 +655,13 @@ export default function Dashboardemployee() {
                   </p>
 
                   <p className="mt-1 text-2xl font-bold">
-                    {site?.work_end ??
-                      '--:--'}
+                    --:--
                   </p>
                 </div>
 
               </div>
 
-              {calculateLateMinutes() > 0 && (
+              {isLate && (
                 <div className="mt-4 flex items-start gap-3 rounded-lg bg-warning/10 p-4">
                   <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
 
@@ -813,13 +671,7 @@ export default function Dashboardemployee() {
                     </p>
 
                     <p className="text-sm text-muted-foreground">
-                      Vous avez actuellement{' '}
-                      {calculateLateMinutes()}{' '}
-                      minute
-                      {calculateLateMinutes() > 1
-                        ? 's'
-                        : ''}{' '}
-                      de retard.
+                      Un retard a été signalé lors de votre pointage.
                     </p>
                   </div>
                 </div>

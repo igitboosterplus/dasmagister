@@ -36,7 +36,7 @@ import {
 // TYPES
 // ============================================================
 
-// type EmployeeRole = 'admin' | 'manager' | 'employee';
+type EmployeeRole = 'admin' | 'manager' | 'employee';
 
 interface Structure {
   id: string;
@@ -84,7 +84,7 @@ interface Employee {
   created_at: string;
 }
 
-interface EmployeeRole {
+interface EmployeeRoles {
   id: string;
   employee_id: string;
   role: EmployeeRole;
@@ -166,7 +166,7 @@ export default function Profile() {
     useState<Site | null>(null);
 
   const [employeeRole, setEmployeeRole] =
-    useState<EmployeeRole | null>(null);
+    useState<EmployeeRoles | null>(null);
 
 
   // Informations modifiables
@@ -589,7 +589,7 @@ export default function Profile() {
         } else if (mounted) {
 
           setEmployeeRole(
-            roleData as EmployeeRole | null
+            roleData as EmployeeRoles | null
           );
 
         }
@@ -1916,7 +1916,7 @@ export default function Profile() {
                   MANAGER
               ================================================== */}
 
-              {currentRole === 'manager' && (
+              {currentRole == 'manager' && (
 
                 <div
                   className="

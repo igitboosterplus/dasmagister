@@ -44,82 +44,39 @@ export default function Dashadmin() {
         const [employeesRes, attendanceRes] = await Promise.all([
           supabase
             .from('employees')
-            .select('id'),
+            .select('id')
+            .eq('is_active', true),
 
           supabase
             .from('attendances')
-            .select(`
-              id,
-              employee_id,
-              check_in,
-              attendance_date,
-              sites (
-                work_start
-              )
-            `)
+            .select('id, employee_id, check_in, validation_status')
             .eq('attendance_date', today),
         ]);
 
         if (employeesRes.error) {
-          console.error(
-            'Erreur lors de la récupération des employés:',
-            employeesRes.error
-          );
+          console.error('Erreur employés:', employeesRes.error);
           return;
         }
-
         if (attendanceRes.error) {
-          console.error(
-            'Erreur lors de la récupération des présences:',
-            attendanceRes.error
-          );
+          console.error('Erreur pointages:', attendanceRes.error);
           return;
         }
 
         const employees = employeesRes.data || [];
         const attendances = attendanceRes.data || [];
 
+        // Dédupliquer par employé (garder le plus récent check_in)
+        const seenEmployees = new Set<string>();
         let present = 0;
         let late = 0;
 
-        for (const attendance of attendances) {
-          if (!attendance.check_in) continue;
-
+        for (const att of attendances) {
+          if (!att.check_in) continue;
+          if (seenEmployees.has(att.employee_id)) continue;
+          seenEmployees.add(att.employee_id);
           present++;
-
-          const checkInDate = new Date(attendance.check_in);
-
-          /*
-           * Heure de début par défaut.
-           * Si le site possède une heure de début,
-           * celle-ci est utilisée.
-           */
-          let workStart = '08:00:00';
-
-          const site = Array.isArray(attendance.sites)
-            ? attendance.sites[0]
-            : attendance.sites;
-
-          if (site?.work_start) {
-            workStart = site.work_start;
-          }
-
-          const [startHour, startMinute] = workStart
-            .split(':')
-            .map(Number);
-
-          const limit = new Date(
-            checkInDate.getFullYear(),
-            checkInDate.getMonth(),
-            checkInDate.getDate(),
-            startHour,
-            startMinute,
-            0
-          );
-
-          if (checkInDate > limit) {
-            late++;
-          }
+          // La V3 remplit validation_status = 'late' côté serveur (clock_in RPC)
+          if (att.validation_status === 'late') late++;
         }
 
         const absent = Math.max(employees.length - present, 0);
@@ -131,10 +88,7 @@ export default function Dashadmin() {
           absentToday: absent,
         });
       } catch (error) {
-        console.error(
-          'Erreur lors du chargement des statistiques:',
-          error
-        );
+        console.error('Erreur chargement statistiques:', error);
       } finally {
         setLoading(false);
       }
@@ -236,10 +190,10 @@ export default function Dashadmin() {
                   <p className="text-2xl font-bold mt-1">
                     {stats.totalEmployees > 0
                       ? Math.round(
-                          (stats.presentToday /
-                            stats.totalEmployees) *
-                            100
-                        )
+                        (stats.presentToday /
+                          stats.totalEmployees) *
+                        100
+                      )
                       : 0}
                     %
                   </p>
@@ -253,10 +207,10 @@ export default function Dashadmin() {
                   <p className="text-2xl font-bold mt-1">
                     {stats.presentToday > 0
                       ? Math.round(
-                          (stats.lateToday /
-                            stats.presentToday) *
-                            100
-                        )
+                        (stats.lateToday /
+                          stats.presentToday) *
+                        100
+                      )
                       : 0}
                     %
                   </p>
@@ -270,10 +224,10 @@ export default function Dashadmin() {
                   <p className="text-2xl font-bold mt-1">
                     {stats.totalEmployees > 0
                       ? Math.round(
-                          (stats.absentToday /
-                            stats.totalEmployees) *
-                            100
-                        )
+                        (stats.absentToday /
+                          stats.totalEmployees) *
+                        100
+                      )
                       : 0}
                     %
                   </p>

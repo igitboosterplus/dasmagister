@@ -277,7 +277,9 @@ export default function ManagerSites() {
   const [sites, setSites] = useState<Site[]>([]);
   const [cities, setCities] = useState<City[]>([]);
   const [schedules, setSchedules] = useState<SiteSchedule[]>([]);
-
+  const [initialScheduleForms, setInitialScheduleForms] = useState<
+    ScheduleForm[]
+  >([]);
   // ----------------------------------------------------------
   // UI
   // ----------------------------------------------------------
@@ -536,83 +538,101 @@ export default function ManagerSites() {
   // FETCH SCHEDULES
   // ==========================================================
 
+  const formatInputTime = (
+    value: string | null | undefined,
+    fallback = ''
+  ): string => {
+    if (!value) return fallback;
+
+    // PostgreSQL TIME peut arriver sous forme "08:00:00"
+    // Le input HTML time attend "08:00"
+    return value.slice(0, 5);
+  };
+
   const fetchSchedules = async (siteId: string) => {
-
     try {
-
       const { data, error } = await supabase
         .from('site_work_schedules')
         .select(`
-          id,
-          site_id,
-          day_of_week,
-          is_working_day,
-          work_start,
-          work_end,
-          break_start,
-          break_end,
-          grace_period_minutes
-        `)
+        id,
+        site_id,
+        day_of_week,
+        is_working_day,
+        work_start,
+        work_end,
+        break_start,
+        break_end,
+        grace_period_minutes
+      `)
         .eq('site_id', siteId)
         .order('day_of_week');
 
-      if (error) throw error;
+      if (error) {
+        console.error('Erreur récupération horaires:', error);
+        throw error;
+      }
+
+      const mappedForms: ScheduleForm[] = DAYS.map((day) => {
+        const existing = (data || []).find(
+          (item: SiteSchedule) =>
+            Number(item.day_of_week) === Number(day.value)
+        );
+
+        const isWorkingDay =
+          existing?.is_working_day ?? day.value <= 5;
+
+        return {
+          day_of_week: day.value,
+
+          is_working_day: isWorkingDay,
+
+          work_start: isWorkingDay
+            ? formatInputTime(existing?.work_start, '08:00')
+            : '',
+
+          work_end: isWorkingDay
+            ? formatInputTime(existing?.work_end, '17:00')
+            : '',
+
+          break_start: formatInputTime(existing?.break_start, ''),
+
+          break_end: formatInputTime(existing?.break_end, ''),
+
+          grace_period_minutes: String(
+            existing?.grace_period_minutes ?? 0
+          ),
+        };
+      });
 
       setSchedules(data || []);
-
-      const mappedForms: ScheduleForm[] =
-        DAYS.map((day) => {
-
-          const existing =
-            (data || []).find(
-              (item: SiteSchedule) =>
-                item.day_of_week === day.value
-            );
-
-          return {
-            day_of_week: day.value,
-
-            is_working_day:
-              existing?.is_working_day ??
-              day.value <= 5,
-
-            work_start:
-              formatTime(existing?.work_start) ||
-              '08:00',
-
-            work_end:
-              formatTime(existing?.work_end) ||
-              '17:00',
-
-            break_start:
-              formatTime(existing?.break_start) === '—'
-                ? ''
-                : formatTime(existing?.break_start),
-
-            break_end:
-              formatTime(existing?.break_end) === '—'
-                ? ''
-                : formatTime(existing?.break_end),
-
-            grace_period_minutes:
-              String(
-                existing?.grace_period_minutes ?? 0
-              ),
-          };
-
-        });
-
       setScheduleForms(mappedForms);
 
+      // Très important si on utilise schedulesDirty
+      setInitialScheduleForms(mappedForms);
+
     } catch (error) {
+      console.error('Erreur fetchSchedules:', error);
 
-      console.error(
-        'Erreur chargement horaires:',
-        error
-      );
+      // Même si aucune configuration n'existe encore,
+      // on fournit des valeurs valides au formulaire.
+      const defaultForms: ScheduleForm[] = DAYS.map((day) => {
+        const isWorkingDay = day.value <= 5;
 
+        return {
+          day_of_week: day.value,
+          is_working_day: isWorkingDay,
+          work_start: isWorkingDay ? '08:00' : '',
+          work_end: isWorkingDay ? '17:00' : '',
+          break_start: '',
+          break_end: '',
+          grace_period_minutes: '0',
+        };
+      });
+
+      setSchedules([]);
+      setScheduleForms(defaultForms);
+      setInitialScheduleForms(defaultForms);
     }
-
   };
 
 
@@ -735,9 +755,9 @@ export default function ManagerSites() {
       previous.map((schedule) =>
         schedule.day_of_week === dayOfWeek
           ? {
-              ...schedule,
-              [field]: value,
-            }
+            ...schedule,
+            [field]: value,
+          }
           : schedule
       )
     );
@@ -888,85 +908,139 @@ export default function ManagerSites() {
   // VALIDATE SCHEDULES
   // ==========================================================
 
+  const timeToMinutes = (time: string): number => {
+    const [hours, minutes] = time.split(':').map(Number);
+
+    if (
+      !Number.isFinite(hours) ||
+      !Number.isFinite(minutes)
+    ) {
+      return NaN;
+    }
+
+    return hours * 60 + minutes;
+  };
+
   const validateSchedules = (): boolean => {
+    console.log(
+      'HORAIRES AVANT VALIDATION:',
+      JSON.parse(JSON.stringify(scheduleForms))
+    );
 
     for (const schedule of scheduleForms) {
+      const day = dayLabel(schedule.day_of_week);
 
+      // Jour non travaillé
       if (!schedule.is_working_day) {
         continue;
       }
 
+      // Vérification présence
       if (
         !schedule.work_start ||
         !schedule.work_end
       ) {
-
         setErrorMessage(
-          `Les horaires sont incomplets pour ${dayLabel(
-            schedule.day_of_week
-          )}.`
+          `Les horaires sont incomplets pour ${day}.`
         );
-
         return false;
-
       }
+
+      // Protection contre les valeurs d'affichage comme "—"
+      if (
+        schedule.work_start === '—' ||
+        schedule.work_end === '—'
+      ) {
+        setErrorMessage(
+          `Les horaires sont invalides pour ${day}.`
+        );
+        return false;
+      }
+
+      const workStart = timeToMinutes(schedule.work_start);
+      const workEnd = timeToMinutes(schedule.work_end);
 
       if (
-        schedule.work_start >=
-        schedule.work_end
+        !Number.isFinite(workStart) ||
+        !Number.isFinite(workEnd)
       ) {
-
         setErrorMessage(
-          `L'heure de fin doit être après l'heure de début pour ${dayLabel(
-            schedule.day_of_week
-          )}.`
+          `Les horaires sont invalides pour ${day}.`
         );
-
         return false;
-
       }
 
-      if (
-        schedule.break_start &&
-        schedule.break_end &&
-        schedule.break_start >=
-        schedule.break_end
-      ) {
-
+      if (workEnd <= workStart) {
         setErrorMessage(
-          `La pause est invalide pour ${dayLabel(
-            schedule.day_of_week
-          )}.`
+          `L'heure de fin doit être après l'heure de début pour ${day}.`
         );
-
         return false;
-
       }
 
-      const grace =
-        Number(
-          schedule.grace_period_minutes
+      // Pause
+      if (schedule.break_start || schedule.break_end) {
+        if (
+          !schedule.break_start ||
+          !schedule.break_end
+        ) {
+          setErrorMessage(
+            `La pause est incomplète pour ${day}.`
+          );
+          return false;
+        }
+
+        const breakStart = timeToMinutes(
+          schedule.break_start
         );
+
+        const breakEnd = timeToMinutes(
+          schedule.break_end
+        );
+
+        if (
+          !Number.isFinite(breakStart) ||
+          !Number.isFinite(breakEnd)
+        ) {
+          setErrorMessage(
+            `La pause est invalide pour ${day}.`
+          );
+          return false;
+        }
+
+        if (breakEnd <= breakStart) {
+          setErrorMessage(
+            `L'heure de fin de pause doit être après l'heure de début pour ${day}.`
+          );
+          return false;
+        }
+
+        if (
+          breakStart < workStart ||
+          breakEnd > workEnd
+        ) {
+          setErrorMessage(
+            `La pause doit être comprise dans les horaires de travail pour ${day}.`
+          );
+          return false;
+        }
+      }
+
+      const grace = Number(
+        schedule.grace_period_minutes
+      );
 
       if (
         !Number.isFinite(grace) ||
         grace < 0
       ) {
-
         setErrorMessage(
-          `La période de grâce est invalide pour ${dayLabel(
-            schedule.day_of_week
-          )}.`
+          `La période de grâce est invalide pour ${day}.`
         );
-
         return false;
-
       }
-
     }
 
     return true;
-
   };
 
 
@@ -1142,66 +1216,73 @@ export default function ManagerSites() {
   // ==========================================================
   // SAVE SCHEDULES
   // ==========================================================
+  const normalizeTimeForDb = (
+    value: string | null | undefined
+  ): string | null => {
+    if (!value || value === '—') {
+      return null;
+    }
 
-  const saveSchedules = async (
-    siteId: string
-  ) => {
+    // HH:MM -> HH:MM:SS
+    if (value.length === 5) {
+      return `${value}:00`;
+    }
 
-    const payload = scheduleForms.map(
-      (schedule) => ({
+    return value;
+  };
 
-        site_id: siteId,
+  const saveSchedules = async (siteId: string) => {
+    const payload = scheduleForms.map((schedule) => ({
+      site_id: siteId,
+      day_of_week: schedule.day_of_week,
 
-        day_of_week:
-          schedule.day_of_week,
+      is_working_day: schedule.is_working_day,
 
-        is_working_day:
-          schedule.is_working_day,
+      work_start: schedule.is_working_day
+        ? normalizeTimeForDb(schedule.work_start)
+        : null,
 
-        work_start:
-          schedule.is_working_day &&
-          schedule.work_start
-            ? `${schedule.work_start}:00`
-            : null,
+      work_end: schedule.is_working_day
+        ? normalizeTimeForDb(schedule.work_end)
+        : null,
 
-        work_end:
-          schedule.is_working_day &&
-          schedule.work_end
-            ? `${schedule.work_end}:00`
-            : null,
-
-        break_start:
+      break_start:
+        schedule.is_working_day &&
           schedule.break_start
-            ? `${schedule.break_start}:00`
-            : null,
+          ? normalizeTimeForDb(schedule.break_start)
+          : null,
 
-        break_end:
+      break_end:
+        schedule.is_working_day &&
           schedule.break_end
-            ? `${schedule.break_end}:00`
-            : null,
+          ? normalizeTimeForDb(schedule.break_end)
+          : null,
 
-        grace_period_minutes:
-          Number(
-            schedule.grace_period_minutes || 0
-          ),
+      grace_period_minutes:
+        Number(schedule.grace_period_minutes) || 0,
+    }));
 
-      })
+    console.log(
+      'PAYLOAD HORAIRES:',
+      JSON.stringify(payload, null, 2)
     );
 
-    const { error } =
-      await supabase
-        .from('site_work_schedules')
-        .upsert(
-          payload,
-          {
-            onConflict:
-              'site_id,day_of_week',
-          }
-        );
+    const { error } = await supabase
+      .from('site_work_schedules')
+      .upsert(payload, {
+        onConflict: 'site_id,day_of_week',
+      });
 
-    if (error) throw error;
+    if (error) {
+      console.error(
+        'Erreur sauvegarde horaires:',
+        error
+      );
 
+      throw error;
+    }
   };
+
 
 
   // ==========================================================
@@ -1773,7 +1854,7 @@ export default function ManagerSites() {
               <p className="font-semibold text-foreground mb-1">
 
                 {search ||
-                statusFilter !== 'active'
+                  statusFilter !== 'active'
                   ? 'Aucun site ne correspond à vos critères.'
                   : "Vous n'avez encore aucun site."}
 
@@ -1822,11 +1903,10 @@ export default function ManagerSites() {
 
               <Card
                 key={site.id}
-                className={`relative transition-opacity ${
-                  !site.is_active
+                className={`relative transition-opacity ${!site.is_active
                     ? 'opacity-60'
                     : ''
-                }`}
+                  }`}
               >
 
                 <CardHeader className="pb-3">
@@ -2054,19 +2134,17 @@ export default function ManagerSites() {
                   <div className="flex items-center justify-between pt-2 border-t border-border/50">
 
                     <span
-                      className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-                        site.is_active
+                      className={`inline-flex items-center gap-1.5 text-xs font-medium ${site.is_active
                           ? 'text-success'
                           : 'text-muted-foreground'
-                      }`}
+                        }`}
                     >
 
                       <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          site.is_active
+                        className={`h-1.5 w-1.5 rounded-full ${site.is_active
                             ? 'bg-success'
                             : 'bg-muted-foreground'
-                        }`}
+                          }`}
                       />
 
                       {site.is_active
@@ -2189,8 +2267,8 @@ export default function ManagerSites() {
                         updateField(
                           'type',
                           value as
-                            | 'magasin'
-                            | 'cave'
+                          | 'magasin'
+                          | 'cave'
                         )
                       }
                     >
@@ -3423,10 +3501,10 @@ export default function ManagerSites() {
                               {schedule.is_working_day
 
                                 ? `${formatTime(
-                                    schedule.work_start
-                                  )} — ${formatTime(
-                                    schedule.work_end
-                                  )}`
+                                  schedule.work_start
+                                )} — ${formatTime(
+                                  schedule.work_end
+                                )}`
 
                                 : 'Repos'}
 
@@ -3456,19 +3534,17 @@ export default function ManagerSites() {
                     </p>
 
                     <span
-                      className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-                        selectedSite.is_active
+                      className={`inline-flex items-center gap-1.5 text-xs font-semibold ${selectedSite.is_active
                           ? 'text-success'
                           : 'text-muted-foreground'
-                      }`}
+                        }`}
                     >
 
                       <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          selectedSite.is_active
+                        className={`h-1.5 w-1.5 rounded-full ${selectedSite.is_active
                             ? 'bg-success'
                             : 'bg-muted-foreground'
-                        }`}
+                          }`}
                       />
 
                       {selectedSite.is_active

@@ -25,6 +25,7 @@ export interface Employee {
   position_id: string | null;
   site_id: string | null;
   manager_id: string | null;
+  account_status: string;
   is_active: boolean;
   created_at: string;
 }
@@ -217,7 +218,7 @@ export function AuthProvider({
   }> => {
     const { data: employee, error } = await supabase
       .from('employees')
-      .select('structure_id, is_active')
+      .select('structure_id, is_active, account_status')
       .eq('auth_user_id', userId)
       .single();
 
@@ -240,6 +241,33 @@ export function AuthProvider({
         valid: false,
         error: new Error(
           'Aucun profil employé associé à ce compte.'
+        ),
+      };
+    }
+
+    if (employee.account_status === 'pending') {
+      return {
+        valid: false,
+        error: new Error(
+          'Votre compte est en attente de validation.'
+        ),
+      };
+    }
+
+    if (employee.account_status === 'rejected') {
+      return {
+        valid: false,
+        error: new Error(
+          'Votre inscription a été refusée.'
+        ),
+      };
+    }
+
+    if (employee.account_status === 'suspended') {
+      return {
+        valid: false,
+        error: new Error(
+          'Votre compte a été suspendu.'
         ),
       };
     }
@@ -412,8 +440,8 @@ export function AuthProvider({
           error instanceof Error
             ? error
             : new Error(
-                'Une erreur inattendue est survenue.'
-              ),
+              'Une erreur inattendue est survenue.'
+            ),
       };
     }
   };
@@ -552,38 +580,38 @@ export function AuthProvider({
        * =====================================================
        */
 
-     if (error) {
-  console.error(
-    '[AUTH SIGNUP] Erreur Supabase:',
-    {
-      message: error.message,
-      status: error.status,
-      name: error.name,
-    }
-  );
+      if (error) {
+        console.error(
+          '[AUTH SIGNUP] Erreur Supabase:',
+          {
+            message: error.message,
+            status: error.status,
+            name: error.name,
+          }
+        );
 
-  if (
-    error.status === 429 ||
-    error.message
-      ?.toLowerCase()
-      .includes('rate limit')
-  ) {
-    return {
-      error: new Error(
-        'Trop de tentatives d’inscription. Veuillez patienter quelques minutes avant de réessayer.'
-      ),
-    };
-  }
+        if (
+          error.status === 429 ||
+          error.message
+            ?.toLowerCase()
+            .includes('rate limit')
+        ) {
+          return {
+            error: new Error(
+              'Trop de tentatives d’inscription. Veuillez patienter quelques minutes avant de réessayer.'
+            ),
+          };
+        }
 
-  return {
-    error: new Error(
-      getAuthErrorMessage(
-        error,
-        'Impossible de créer votre compte.'
-      )
-    ),
-  };
-}
+        return {
+          error: new Error(
+            getAuthErrorMessage(
+              error,
+              'Impossible de créer votre compte.'
+            )
+          ),
+        };
+      }
       /**
        * =====================================================
        * 6. VÉRIFICATION DU USER
@@ -632,8 +660,8 @@ export function AuthProvider({
           error instanceof Error
             ? error
             : new Error(
-                'Une erreur inattendue est survenue lors de l’inscription.'
-              ),
+              'Une erreur inattendue est survenue lors de l’inscription.'
+            ),
       };
     }
   };
