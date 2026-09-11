@@ -353,213 +353,213 @@ export default function Reports() {
    * ============================================================
    */
 
- const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault();
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
 
-  alert('vous avez clicker');
+    alert('vous avez clicker');
 
-  if (!profile) {
-    toast({
-      title: 'Erreur',
-      description: 'Utilisateur non connecté.',
-      variant: 'destructive',
-    });
-    return;
-  }
+    if (!profile) {
+      toast({
+        title: 'Erreur',
+        description: 'Utilisateur non connecté.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-  if (!newReport.typeId) {
-    toast({
-      title: 'Type requis',
-      description: 'Veuillez sélectionner un type de rapport.',
-      variant: 'destructive',
-    });
-    return;
-  }
+    if (!newReport.typeId) {
+      toast({
+        title: 'Type requis',
+        description: 'Veuillez sélectionner un type de rapport.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-  if (!newReport.title.trim()) {
-    toast({
-      title: 'Titre requis',
-      description: 'Veuillez saisir le titre du rapport.',
-      variant: 'destructive',
-    });
-    return;
-  }
+    if (!newReport.title.trim()) {
+      toast({
+        title: 'Titre requis',
+        description: 'Veuillez saisir le titre du rapport.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-  setSubmitting(true);
+    setSubmitting(true);
 
-  try {
-    console.log('=== CREATION RAPPORT ===');
-    console.log('profile:', profile);
-    console.log('role:', role);
-    console.log('employee_id:', profile.id);
-    console.log('manager_id:', profile.manager_id);
-    console.log('admin_id:', adminId);
-    console.log('report_type_id:', newReport.typeId);
+    try {
+      console.log('=== CREATION RAPPORT ===');
+      console.log('profile:', profile);
+      console.log('role:', role);
+      console.log('employee_id:', profile.id);
+      console.log('manager_id:', profile.manager_id);
+      console.log('admin_id:', adminId);
+      console.log('report_type_id:', newReport.typeId);
 
-    let recipientId: string | null = null;
+      let recipientId: string | null = null;
 
-    // EMPLOYEE → MANAGER
-    if (role === 'employee') {
-      if (!profile.manager_id) {
+      // EMPLOYEE → MANAGER
+      if (role === 'employee') {
+        if (!profile.manager_id) {
+          throw new Error(
+            'Votre compte n’est associé à aucun manager.'
+          );
+        }
+
+        recipientId = profile.manager_id;
+      }
+
+      // MANAGER → ADMIN
+      if (role === 'manager') {
+        if (!adminId) {
+          throw new Error(
+            'Aucun administrateur n’a été trouvé.'
+          );
+        }
+
+        recipientId = adminId;
+      }
+
+      // ADMIN
+      if (role === 'admin') {
         throw new Error(
-          'Votre compte n’est associé à aucun manager.'
+          'Un administrateur ne peut pas envoyer de rapport depuis cette interface.'
         );
       }
 
-      recipientId = profile.manager_id;
-    }
+      let fileUrl: string | null = null;
 
-    // MANAGER → ADMIN
-    if (role === 'manager') {
-      if (!adminId) {
-        throw new Error(
-          'Aucun administrateur n’a été trouvé.'
-        );
-      }
+      // ==========================================
+      // UPLOAD
+      // ==========================================
 
-      recipientId = adminId;
-    }
+      if (newReport.file) {
+        const file = newReport.file;
 
-    // ADMIN
-    if (role === 'admin') {
-      throw new Error(
-        'Un administrateur ne peut pas envoyer de rapport depuis cette interface.'
-      );
-    }
+        const extension =
+          file.name.includes('.')
+            ? file.name.split('.').pop()
+            : 'file';
 
-    let fileUrl: string | null = null;
+        const fileName =
+          `${crypto.randomUUID()}.${extension}`;
 
-    // ==========================================
-    // UPLOAD
-    // ==========================================
+        const filePath =
+          `${profile.id}/${fileName}`;
 
-    if (newReport.file) {
-      const file = newReport.file;
+        console.log('Upload fichier:', filePath);
 
-      const extension =
-        file.name.includes('.')
-          ? file.name.split('.').pop()
-          : 'file';
+        const { error: uploadError } =
+          await supabase.storage
+            .from('reports')
+            .upload(filePath, file, {
+              cacheControl: '3600',
+              upsert: false,
+            });
 
-      const fileName =
-        `${crypto.randomUUID()}.${extension}`;
+        if (uploadError) {
+          console.error(
+            'Erreur upload:',
+            uploadError
+          );
 
-      const filePath =
-        `${profile.id}/${fileName}`;
+          throw new Error(
+            `Impossible d'envoyer la pièce jointe : ${uploadError.message}`
+          );
+        }
 
-      console.log('Upload fichier:', filePath);
-
-      const { error: uploadError } =
-        await supabase.storage
+        const {
+          data: publicUrlData,
+        } = supabase.storage
           .from('reports')
-          .upload(filePath, file, {
-            cacheControl: '3600',
-            upsert: false,
-          });
+          .getPublicUrl(filePath);
 
-      if (uploadError) {
-        console.error(
-          'Erreur upload:',
-          uploadError
-        );
-
-        throw new Error(
-          `Impossible d'envoyer la pièce jointe : ${uploadError.message}`
-        );
+        fileUrl =
+          publicUrlData.publicUrl;
       }
+
+      // ==========================================
+      // INSERT REPORT
+      // ==========================================
+
+      const payload = {
+        employee_id: profile.id,
+        report_type_id: newReport.typeId,
+        title: newReport.title.trim(),
+        description:
+          newReport.description.trim() || null,
+        file_url: fileUrl,
+        recipient_id: recipientId,
+      };
+
+      console.log(
+        'Payload rapport:',
+        payload
+      );
 
       const {
-        data: publicUrlData,
-      } = supabase.storage
+        data,
+        error: insertError,
+      } = await supabase
         .from('reports')
-        .getPublicUrl(filePath);
+        .insert(payload)
+        .select()
+        .single();
 
-      fileUrl =
-        publicUrlData.publicUrl;
-    }
+      if (insertError) {
+        console.error(
+          'Erreur INSERT reports:',
+          insertError
+        );
 
-    // ==========================================
-    // INSERT REPORT
-    // ==========================================
+        throw new Error(
+          `Impossible de créer le rapport : ${insertError.message}`
+        );
+      }
 
-    const payload = {
-      employee_id: profile.id,
-      report_type_id: newReport.typeId,
-      title: newReport.title.trim(),
-      description:
-        newReport.description.trim() || null,
-      file_url: fileUrl,
-      recipient_id: recipientId,
-    };
+      console.log(
+        'Rapport créé:',
+        data
+      );
 
-    console.log(
-      'Payload rapport:',
-      payload
-    );
+      toast({
+        title: 'Rapport envoyé',
+        description:
+          role === 'employee'
+            ? 'Votre rapport a été envoyé à votre manager.'
+            : 'Votre rapport a été envoyé à l’administration.',
+      });
 
-    const {
-      data,
-      error: insertError,
-    } = await supabase
-      .from('reports')
-      .insert(payload)
-      .select()
-      .single();
+      setNewReport({
+        title: '',
+        description: '',
+        typeId: '',
+        file: null,
+      });
 
-    if (insertError) {
+      setIsCreating(false);
+
+      await loadReports();
+
+    } catch (error: any) {
+
       console.error(
-        'Erreur INSERT reports:',
-        insertError
+        'ERREUR COMPLETE CREATION RAPPORT:',
+        error
       );
 
-      throw new Error(
-        `Impossible de créer le rapport : ${insertError.message}`
-      );
+      toast({
+        title: 'Échec de l’envoi',
+        description:
+          error?.message ||
+          'Impossible de créer le rapport.',
+        variant: 'destructive',
+      });
+
+    } finally {
+      setSubmitting(false);
     }
-
-    console.log(
-      'Rapport créé:',
-      data
-    );
-
-    toast({
-      title: 'Rapport envoyé',
-      description:
-        role === 'employee'
-          ? 'Votre rapport a été envoyé à votre manager.'
-          : 'Votre rapport a été envoyé à l’administration.',
-    });
-
-    setNewReport({
-      title: '',
-      description: '',
-      typeId: '',
-      file: null,
-    });
-
-    setIsCreating(false);
-
-    await loadReports();
-
-  } catch (error: any) {
-
-    console.error(
-      'ERREUR COMPLETE CREATION RAPPORT:',
-      error
-    );
-
-    toast({
-      title: 'Échec de l’envoi',
-      description:
-        error?.message ||
-        'Impossible de créer le rapport.',
-      variant: 'destructive',
-    });
-
-  } finally {
-    setSubmitting(false);
-  }
-};
+  };
 
   /**
    * ============================================================
@@ -684,9 +684,9 @@ export default function Reports() {
 
       return (
         report.employee_id !==
-          currentEmployeeId &&
+        currentEmployeeId &&
         report.employees?.manager_id ===
-          currentEmployeeId
+        currentEmployeeId
       );
     });
 
@@ -698,7 +698,7 @@ export default function Reports() {
     (report) =>
       role === 'manager' &&
       report.employee_id ===
-        currentEmployeeId
+      currentEmployeeId
   );
 
   /**
@@ -866,35 +866,35 @@ export default function Reports() {
               {role === 'admin'
                 ? 'Rapports reçus des managers'
                 : role === 'manager'
-                ? 'Gestion des rapports de votre équipe'
-                : 'Historique de vos rapports'}
+                  ? 'Gestion des rapports de votre équipe'
+                  : 'Historique de vos rapports'}
             </p>
           </div>
 
           {(role === 'employee' ||
             role === 'manager') && (
-            <Button
-              onClick={() =>
-                setIsCreating(
-                  !isCreating
-                )
-              }
-              variant={
-                isCreating
-                  ? 'outline'
-                  : 'default'
-              }
-            >
-              {isCreating ? (
-                'Fermer'
-              ) : (
-                <>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Nouveau rapport
-                </>
-              )}
-            </Button>
-          )}
+              <Button
+                onClick={() =>
+                  setIsCreating(
+                    !isCreating
+                  )
+                }
+                variant={
+                  isCreating
+                    ? 'outline'
+                    : 'default'
+                }
+              >
+                {isCreating ? (
+                  'Fermer'
+                ) : (
+                  <>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Nouveau rapport
+                  </>
+                )}
+              </Button>
+            )}
         </div>
 
         {/* =====================================================
@@ -1046,11 +1046,11 @@ export default function Reports() {
 
                   <Button
                     type="submit"
-                    // disabled={
-                    //   submitting ||
-                    //   !newReport.typeId ||
-                    //   !newReport.title.trim()
-                    // }
+                  // disabled={
+                  //   submitting ||
+                  //   !newReport.typeId ||
+                  //   !newReport.title.trim()
+                  // }
                   >
                     {submitting ? (
                       <>
@@ -1082,8 +1082,8 @@ export default function Reports() {
 
             {employeeReports.length ===
               0 && (
-              <EmptyState message="Vous n'avez encore soumis aucun rapport." />
-            )}
+                <EmptyState message="Vous n'avez encore soumis aucun rapport." />
+              )}
           </div>
         )}
 
@@ -1132,8 +1132,8 @@ export default function Reports() {
 
                 {managerReceivedReports.length ===
                   0 && (
-                  <EmptyState message="Aucun rapport reçu de vos employés." />
-                )}
+                    <EmptyState message="Aucun rapport reçu de vos employés." />
+                  )}
               </div>
             </TabsContent>
 
@@ -1146,8 +1146,8 @@ export default function Reports() {
 
                 {managerOwnReports.length ===
                   0 && (
-                  <EmptyState message="Vous n'avez encore soumis aucun rapport à l'administration." />
-                )}
+                    <EmptyState message="Vous n'avez encore soumis aucun rapport à l'administration." />
+                  )}
               </div>
             </TabsContent>
           </Tabs>
@@ -1167,8 +1167,8 @@ export default function Reports() {
 
               {adminReceivedReports.length ===
                 0 && (
-                <EmptyState message="Aucun rapport reçu pour le moment." />
-              )}
+                  <EmptyState message="Aucun rapport reçu pour le moment." />
+                )}
             </div>
           </div>
         )}
@@ -1239,20 +1239,20 @@ export default function Reports() {
 
                   {selectedReport
                     .forwarded_at && (
-                    <div className="rounded-lg border p-3">
-                      <p className="text-xs text-muted-foreground">
-                        Transfert
-                      </p>
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">
+                          Transfert
+                        </p>
 
-                      <p className="font-medium mt-1 flex items-center gap-1">
-                        <Forward className="h-4 w-4" />
+                        <p className="font-medium mt-1 flex items-center gap-1">
+                          <Forward className="h-4 w-4" />
 
-                        {formatDate(
-                          selectedReport.forwarded_at
-                        )}
-                      </p>
-                    </div>
-                  )}
+                          {formatDate(
+                            selectedReport.forwarded_at
+                          )}
+                        </p>
+                      </div>
+                    )}
                 </div>
 
                 <div>

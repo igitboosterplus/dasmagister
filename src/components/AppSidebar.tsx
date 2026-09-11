@@ -20,10 +20,10 @@ interface NavItem {
 }
 const navItems: NavItem[] = [
   { label: 'Tableau de bord', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'manager', 'employee'] },
-  { label: 'Pointage', icon: Clock, path: '/attendance', roles: ['admin', 'manager', 'employee'] },
+  { label: 'Pointage', icon: Clock, path: '/attendance', roles: ['manager', 'employee'] },
   { label: 'Employés', icon: Users, path: '/employees', roles: ['admin', 'manager'] },
   { label: 'Sites', icon: MapPin, path: '/manager/sites', roles: ['manager'] },
-  { label: 'Gestion pointage',icon:Clock, path: '/manager/attendance', roles: ['manager'] },
+  { label: 'Gestion pointage', icon: Clock, path: '/manager/attendance', roles: ['admin', 'manager'] },
   { label: 'Rapports', icon: BarChart3, path: '/reports', roles: ['admin', 'manager', 'employee'] },
   { label: 'Paramètres', icon: Settings, path: '/settings', roles: ['admin'] },
 ];
@@ -63,11 +63,10 @@ export default function AppSidebar() {
             <button
               key={item.path}
               onClick={() => navigate(item.path)}
-              className={`sidebar-nav-item w-full text-left ${
-                isActive
+              className={`sidebar-nav-item w-full text-left ${isActive
                   ? 'bg-sidebar-accent text-sidebar-primary'
                   : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-              }`}
+                }`}
             >
               <item.icon className="h-4 w-4 flex-shrink-0" />
               {item.label}
@@ -80,9 +79,9 @@ export default function AppSidebar() {
       <div className="border-t border-sidebar-border p-4">
         <div className="mb-3">
           < a href="/profile">
-          <p className="text-sm font-medium text-sidebar-primary-foreground truncate">
-            {profile?.first_name} {profile?.last_name}
-          </p>
+            <p className="text-sm font-medium text-sidebar-primary-foreground truncate">
+              {profile?.first_name} {profile?.last_name}
+            </p>
           </a>
           <div className="flex items-center gap-1.5 mt-1">
             <Shield className="h-3 w-3 text-sidebar-primary" />

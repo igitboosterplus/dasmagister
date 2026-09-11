@@ -165,6 +165,8 @@ export default function Login() {
         setStructures(
           data ?? []
         );
+        console.log('welcome to you this is your problem how can i hepl you to resolve this problem');
+        console.log( data);
 
       } catch (error) {
 
@@ -702,7 +704,6 @@ export default function Login() {
                 )
               )}
 
-
               {structures.length === 0 && (
 
                 <div className="
@@ -746,7 +747,7 @@ export default function Login() {
       </div>
     );
   }
-
+{{console.log(structures);}}
 
   // ==========================================================
   // FORMULAIRE DE CONNEXION / INSCRIPTION
