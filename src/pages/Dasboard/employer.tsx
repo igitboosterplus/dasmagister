@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
+import { useNavigate } from 'react-router-dom';
 
 import {
   Card,
@@ -36,6 +37,8 @@ interface Attendance {
 
 export default function Dashboardemployee() {
   const { profile, role } = useAuth();
+
+  const navigate = useNavigate();
 
   const [todayAttendance, setTodayAttendance] =
     useState<Attendance | null>(null);
@@ -260,65 +263,9 @@ export default function Dashboardemployee() {
    * Cette fonction suppose que les tables disposent
    * des opérations INSERT / UPDATE nécessaires.
    */
-  const handleAttendance = async () => {
-    if (!profile?.id) return;
-
-    try {
-      setActionLoading(true);
-
-      if (!todayAttendance?.check_in) {
-        // ARRIVÉE — utilise la RPC V3
-        const { data: attendanceId, error } = await supabase.rpc('clock_in', {
-          p_latitude: null,
-          p_longitude: null,
-          p_accuracy: null,
-          p_client_event_id: crypto.randomUUID(),
-          p_device_recorded_at: null,
-        });
-
-        if (error) {
-          console.error('Erreur pointage arrivée:', error);
-          return;
-        }
-
-        if (attendanceId) {
-          const { data: rec } = await supabase
-            .from('attendances')
-            .select('id, employee_id, attendance_date, check_in, check_out, validation_status')
-            .eq('id', attendanceId)
-            .single();
-          setTodayAttendance(rec as Attendance);
-        }
-        return;
-      }
-
-      if (todayAttendance.check_in && !todayAttendance.check_out) {
-        // SORTIE — utilise la RPC V3
-        const { error } = await supabase.rpc('clock_out', {
-          p_latitude: null,
-          p_longitude: null,
-          p_accuracy: null,
-          p_client_event_id: crypto.randomUUID(),
-          p_device_recorded_at: null,
-        });
-
-        if (error) {
-          console.error('Erreur pointage sortie:', error);
-          return;
-        }
-
-        const { data: rec } = await supabase
-          .from('attendances')
-          .select('id, employee_id, attendance_date, check_in, check_out, validation_status')
-          .eq('id', todayAttendance.id)
-          .single();
-        setTodayAttendance(rec as Attendance);
-      }
-    } finally {
-      setActionLoading(false);
-    }
+  const handleAttendance = () => {
+    navigate('/attendance');
   };
-
   /**
    * ============================================================
    * LABEL DU BOUTON
@@ -431,24 +378,14 @@ export default function Dashboardemployee() {
               <Button
                 size="lg"
                 onClick={handleAttendance}
-                disabled={
-                  actionLoading ||
-                  Boolean(
-                    todayAttendance?.check_out
-                  )
-                }
+                disabled={Boolean(todayAttendance?.check_out)}
                 className="min-w-[220px]"
               >
-                {actionLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    Enregistrement...
-                  </>
-                ) : todayAttendance?.check_in &&
+                {todayAttendance?.check_in &&
                   !todayAttendance?.check_out ? (
                   <>
                     <LogOut className="mr-2 h-5 w-5" />
-                    Pointer mon départ
+                    Gérer mon départ
                   </>
                 ) : todayAttendance?.check_out ? (
                   <>

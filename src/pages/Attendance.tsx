@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -17,14 +16,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 
 import { useToast } from '@/hooks/use-toast';
 
@@ -151,7 +142,6 @@ interface PendingEvent {
 
 const OFFLINE_QUEUE_KEY = 'attendance_event_queue_v3';
 
-const SELECTED_SITE_KEY = 'attendance_selected_site_v3';
 
 const EXIT_CONFIRMATION_MS = 6 * 60 * 1000;
 
@@ -199,25 +189,6 @@ function saveQueue(queue: PendingEvent[]): void {
     OFFLINE_QUEUE_KEY,
     JSON.stringify(queue)
   );
-}
-
-function loadSelectedSiteId(): string | null {
-  try {
-    return localStorage.getItem(SELECTED_SITE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function saveSelectedSiteId(siteId: string): void {
-  try {
-    localStorage.setItem(
-      SELECTED_SITE_KEY,
-      siteId
-    );
-  } catch {
-    // localStorage peut être indisponible.
-  }
 }
 
 function getErrorMessage(error: unknown): string {
@@ -268,9 +239,12 @@ function isNetworkError(error: unknown): boolean {
   return false;
 }
 
-function getPosition(): Promise<GeolocationPosition> {
+function getPosition(
+  maxAccuracyM = 100,
+  timeoutMs = 20000
+): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
-    if (!('geolocation' in navigator)) {
+    if (!navigator.geolocation) {
       reject(
         new Error(
           'La géolocalisation n’est pas disponible sur cet appareil.'
@@ -280,48 +254,118 @@ function getPosition(): Promise<GeolocationPosition> {
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      resolve,
-      (error) => {
-        switch (error.code) {
-          case error.PERMISSION_DENIED:
-            reject(
-              new Error(
-                'L’autorisation GPS a été refusée.'
-              )
-            );
-            break;
+    let watchId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-          case error.POSITION_UNAVAILABLE:
-            reject(
-              new Error(
-                'Position GPS indisponible.'
-              )
-            );
-            break;
+    let bestPosition: GeolocationPosition | null = null;
 
-          case error.TIMEOUT:
-            reject(
-              new Error(
-                'Le GPS met trop de temps à répondre.'
-              )
-            );
-            break;
-
-          default:
-            reject(
-              new Error(
-                'Impossible de récupérer la position GPS.'
-              )
-            );
-        }
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0,
+    const cleanup = () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
       }
-    );
+
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+
+    const finish = (
+      position: GeolocationPosition
+    ) => {
+      cleanup();
+      resolve(position);
+    };
+
+    const handlePosition = (
+      position: GeolocationPosition
+    ) => {
+      console.log(
+        'GPS position reçue:',
+        {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        }
+      );
+
+      /*
+       * On conserve toujours la meilleure position reçue.
+       */
+      if (
+        !bestPosition ||
+        position.coords.accuracy <
+        bestPosition.coords.accuracy
+      ) {
+        bestPosition = position;
+      }
+
+      /*
+       * On accepte immédiatement si la précision
+       * est suffisamment bonne.
+       */
+      if (
+        position.coords.accuracy <=
+        maxAccuracyM
+      ) {
+        finish(position);
+      }
+    };
+
+    const handleError = (
+      error: GeolocationPositionError
+    ) => {
+      console.warn(
+        'Erreur GPS:',
+        error
+      );
+    };
+
+    watchId =
+      navigator.geolocation.watchPosition(
+        handlePosition,
+        handleError,
+        {
+          enableHighAccuracy: true,
+          timeout: timeoutMs,
+          maximumAge: 0,
+        }
+      );
+
+    timeoutId = setTimeout(() => {
+      cleanup();
+
+      /*
+       * On refuse une position catastrophique.
+       */
+      if (!bestPosition) {
+        reject(
+          new Error(
+            'Impossible d’obtenir votre position GPS.'
+          )
+        );
+
+        return;
+      }
+
+      if (
+        bestPosition.coords.accuracy >
+        maxAccuracyM
+      ) {
+        reject(
+          new Error(
+            `Précision GPS insuffisante : ${Math.round(
+              bestPosition.coords.accuracy
+            )} m. Veuillez activer la localisation précise et réessayer.`
+          )
+        );
+
+        return;
+      }
+
+      resolve(bestPosition);
+    }, timeoutMs);
   });
 }
 
@@ -347,8 +391,8 @@ function calculateDistance(
   const a =
     Math.sin(dLatitude / 2) ** 2 +
     Math.cos(toRadians(latitude1)) *
-      Math.cos(toRadians(latitude2)) *
-      Math.sin(dLongitude / 2) ** 2;
+    Math.cos(toRadians(latitude2)) *
+    Math.sin(dLongitude / 2) ** 2;
 
   return (
     earthRadius *
@@ -359,6 +403,63 @@ function calculateDistance(
     )
   );
 }
+
+interface DetectedSite {
+  site: SiteContext;
+  distanceM: number;
+}
+
+/**
+ * Détermine automatiquement le site auquel le salarié est autorisé
+ * à pointer à partir de sa position GPS.
+ *
+ * Important : on ne cherche QUE dans les sites affectés au salarié.
+ * Le RPC côté Supabase doit continuer à faire la même vérification
+ * côté serveur : le contrôle client n'est pas une barrière de sécurité.
+ */
+function detectAssignedSiteFromPosition(
+  position: GeolocationPosition,
+  assignedSites: SiteContext[]
+): DetectedSite | null {
+  const latitude = position.coords.latitude;
+  const longitude = position.coords.longitude;
+  const accuracy = position.coords.accuracy;
+
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(accuracy) ||
+    accuracy <= 0
+  ) {
+    return null;
+  }
+
+  const candidates = assignedSites
+    .filter(
+      (site) =>
+        site.latitude !== null &&
+        site.longitude !== null &&
+        (!site.gps_required || site.latitude !== null) &&
+        accuracy <= site.max_gps_accuracy_m
+    )
+    .map((site) => ({
+      site,
+      distanceM: calculateDistance(
+        latitude,
+        longitude,
+        site.latitude as number,
+        site.longitude as number
+      ),
+    }))
+    .filter(
+      ({ site, distanceM }) =>
+        distanceM <= site.location_radius_m
+    )
+    .sort((a, b) => a.distanceM - b.distanceM);
+
+  return candidates[0] ?? null;
+}
+
 
 /* ============================================================
  * COMPONENT
@@ -374,9 +475,6 @@ export default function Attendance() {
 
   const [sites, setSites] =
     useState<SiteContext[]>([]);
-
-  const [selectedSiteId, setSelectedSiteId] =
-    useState<string | null>(null);
 
   const [todayRecord, setTodayRecord] =
     useState<AttendanceRecord | null>(null);
@@ -433,19 +531,6 @@ export default function Attendance() {
 
   const processingLocationRef =
     useRef(false);
-
-  /* ----------------------------------------------------------
-   * SELECTED SITE
-   * -------------------------------------------------------- */
-
-  const selectedSite = useMemo(
-    () =>
-      sites.find(
-        (site) =>
-          site.site_id === selectedSiteId
-      ) ?? null,
-    [sites, selectedSiteId]
-  );
 
   /* ==========================================================
    * LOAD SITES
@@ -517,35 +602,6 @@ export default function Attendance() {
       }
 
       setSites(result);
-
-      /*
-       * Restaurer le dernier site choisi.
-       */
-      const savedSiteId =
-        loadSelectedSiteId();
-
-      const savedSiteExists =
-        savedSiteId &&
-        result.some(
-          (site) =>
-            site.site_id === savedSiteId
-        );
-
-      if (savedSiteExists) {
-        setSelectedSiteId(
-          savedSiteId
-        );
-      } else if (result.length === 1) {
-        setSelectedSiteId(
-          result[0].site_id
-        );
-
-        saveSelectedSiteId(
-          result[0].site_id
-        );
-      } else {
-        setSelectedSiteId(null);
-      }
 
       return result;
     },
@@ -805,9 +861,16 @@ export default function Attendance() {
                 args
               );
 
-            if (error) {
-              throw error;
-            }
+           if (error) {
+  console.error('CLOCK_IN RPC ERROR', {
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+  });
+
+  throw error;
+}
 
             break;
           }
@@ -919,8 +982,14 @@ export default function Attendance() {
           console.warn(
             'Événement rejeté définitivement:',
             event,
-            getErrorMessage(error)
+            error
           );
+
+          toast({
+            title: 'Pointage non synchronisé',
+            description: getAttendanceErrorMessage(error),
+            variant: 'destructive',
+          });
         }
       }
 
@@ -1042,203 +1111,281 @@ export default function Attendance() {
   ]);
 
   /* ==========================================================
-   * SITE SELECTION
+   * ATTENDANCE ERROR MESSAGES
    * ======================================================== */
 
-  const handleSiteChange =
-    useCallback(
-      (siteId: string) => {
-        setSelectedSiteId(
-          siteId
-        );
+  function getAttendanceErrorMessage(
+    error: unknown
+  ): string {
+    const message = getErrorMessage(error);
 
-        saveSelectedSiteId(
-          siteId
-        );
-      },
-      []
-    );
+    const normalized = message
+      .replace(/^Error:\s*/i, '')
+      .trim();
+
+    const knownMessages: Array<[string, string]> = [
+      [
+        'EMPLOYEE_NOT_ASSIGNED_TO_SITE',
+        "Vous n'êtes pas affecté à ce site. Vous ne pouvez pas y pointer.",
+      ],
+      [
+        'GPS_OUTSIDE_SITE',
+        "Votre position GPS ne se trouve pas dans le périmètre autorisé du site.",
+      ],
+      [
+        'GPS_ACCURACY_INSUFFICIENT',
+        "La précision GPS est insuffisante pour valider ce pointage. Activez la localisation précise et réessayez.",
+      ],
+      [
+        'GEOLOCATION_NOT_CONFIGURED',
+        "La géolocalisation de ce site n'est pas correctement configurée. Contactez votre responsable.",
+      ],
+      [
+        'SITE_NOT_FOUND',
+        "Le site demandé n'existe pas ou n'est plus actif.",
+      ],
+      [
+        'NO_ACTIVE_SITE_ASSIGNMENT',
+        "Vous n'avez aucun site actif auquel vous êtes affecté.",
+      ],
+      [
+        'ATTENDANCE_ALREADY_EXISTS',
+        "Une présence existe déjà pour aujourd'hui.",
+      ],
+      [
+        'ALREADY_CLOCKED_IN',
+        "Votre arrivée est déjà enregistrée pour aujourd'hui.",
+      ],
+      [
+        'ALREADY_CLOCKED_OUT',
+        "Votre départ est déjà enregistré pour aujourd'hui.",
+      ],
+      [
+        'ATTENDANCE_NOT_FOUND',
+        "Aucune présence active n'a été trouvée pour aujourd'hui.",
+      ],
+    ];
+
+    for (const [code, friendlyMessage] of knownMessages) {
+      if (normalized.includes(code)) {
+        return friendlyMessage;
+      }
+    }
+
+    if (normalized.includes('42501')) {
+      return "Accès refusé : vous n'êtes pas autorisé à effectuer cette opération.";
+    }
+
+    if (normalized.includes('PGRST116')) {
+      return "Les données de pointage attendues sont introuvables. Actualisez la page et réessayez.";
+    }
+
+    // Supabase place parfois le détail utile dans details/hint plutôt
+    // que dans message. getErrorMessage ne les récupère pas, donc on
+    // tente ici de les exposer proprement à l'utilisateur.
+    if (
+      typeof error === 'object' &&
+      error !== null
+    ) {
+      const details =
+        'details' in error &&
+        typeof error.details === 'string'
+          ? error.details.trim()
+          : '';
+      const hint =
+        'hint' in error &&
+        typeof error.hint === 'string'
+          ? error.hint.trim()
+          : '';
+
+      if (details) {
+        return details;
+      }
+
+      if (hint) {
+        return hint;
+      }
+    }
+
+    return normalized ||
+      'Le pointage n’a pas pu être enregistré. Vérifiez votre connexion, votre GPS et votre affectation au site, puis réessayez.';
+  }
 
   /* ==========================================================
    * CLOCK IN
    * ======================================================== */
 
-  const handleClockIn =
-    async () => {
-      if (!profile) {
-        return;
-      }
 
-      if (!selectedSite) {
-        toast({
-          title:
-            'Site requis',
-          description:
-            'Sélectionnez le site sur lequel vous travaillez.',
-          variant:
-            'destructive',
-        });
+  const handleClockIn = async () => {
+    if (!profile) {
+      toast({
+        title: 'Utilisateur introuvable',
+        description: 'Votre session utilisateur n’est pas disponible. Reconnectez-vous.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-        return;
-      }
+    if (sites.length === 0) {
+      toast({
+        title: 'Aucun site autorisé',
+        description: "Vous n’êtes affecté à aucun site actif. Vous ne pouvez pas effectuer de pointage.",
+        variant: 'destructive',
+      });
+      return;
+    }
 
-      if (todayRecord) {
-        toast({
-          title:
-            'Pointage déjà existant',
-          description:
-            'Une présence existe déjà pour aujourd’hui.',
-          variant:
-            'destructive',
-        });
+    if (todayRecord) {
+      toast({
+        title: 'Pointage déjà effectué',
+        description: 'Une présence existe déjà pour aujourd’hui.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
-        return;
-      }
+    setSubmitting(true);
 
-      setSubmitting(true);
+    let event: PendingEvent | null = null;
 
-      try {
-        const position =
-          await getPosition();
-
-        const now =
-          new Date();
-
-        const event: PendingEvent = {
-          id:
-            crypto.randomUUID(),
-
-          type:
-            'CLOCK_IN',
-
-          siteId:
-            selectedSite.site_id,
-
-          occurredAt:
-            now.toISOString(),
-
-          latitude:
-            position.coords.latitude,
-
-          longitude:
-            position.coords.longitude,
-
-          accuracyM:
-            position.coords.accuracy,
-
-          clientEventId:
-            createClientEventId(),
-
-          attempts: 0,
-        };
-
-        /*
-         * OFFLINE
-         */
-        if (!navigator.onLine) {
-          queueEvent(event);
-
-          toast({
-            title:
-              'Arrivée enregistrée localement',
-            description:
-              'Elle sera synchronisée dès que la connexion reviendra.',
-          });
-
-          return;
-        }
-
-        /*
-         * ONLINE
-         */
-        await executeAttendanceRpc(
-          event
+    try {
+      if (!navigator.geolocation) {
+        throw new Error(
+          'La géolocalisation n’est pas disponible sur cet appareil. Elle est nécessaire pour déterminer le site de pointage.'
         );
+      }
 
-        await loadTodayRecord();
-        await loadHistory();
+      toast({
+        title: 'Localisation en cours',
+        description: 'Nous déterminons automatiquement le site correspondant à votre position.',
+      });
 
-        toast({
-          title:
-            'Arrivée enregistrée',
-          description:
-            `Pointage effectué sur ${selectedSite.site_name}.`,
-        });
-      } catch (error: unknown) {
-        /*
-         * Si la connexion vient de tomber
-         * pendant la requête, on met l'événement
-         * en queue plutôt que de perdre le pointage.
-         */
-        if (
-          !navigator.onLine ||
-          isNetworkError(error)
-        ) {
-          try {
-            const position =
-              await getPosition();
+      const position = await getPosition(
+        Math.max(
+          ...sites.map((site) => site.max_gps_accuracy_m),
+          100
+        ),
+        20000
+      );
 
-            const now =
-              new Date();
+      const detected = detectAssignedSiteFromPosition(
+        position,
+        sites
+      );
 
-            queueEvent({
-              id:
-                crypto.randomUUID(),
+      if (!detected) {
+        const nearestAssignedSite = sites
+          .filter(
+            (site) =>
+              site.latitude !== null &&
+              site.longitude !== null
+          )
+          .map((site) => ({
+            site,
+            distanceM: calculateDistance(
+              position.coords.latitude,
+              position.coords.longitude,
+              site.latitude as number,
+              site.longitude as number
+            ),
+          }))
+          .sort((a, b) => a.distanceM - b.distanceM)[0];
 
-              type:
-                'CLOCK_IN',
-
-              siteId:
-                selectedSite.site_id,
-
-              occurredAt:
-                now.toISOString(),
-
-              latitude:
-                position.coords.latitude,
-
-              longitude:
-                position.coords.longitude,
-
-              accuracyM:
-                position.coords.accuracy,
-
-              clientEventId:
-                createClientEventId(),
-
-              attempts: 0,
-            });
-
-            toast({
-              title:
-                'Connexion interrompue',
-              description:
-                'Le pointage a été placé dans la file de synchronisation.',
-            });
-
-            return;
-          } catch {
-            // On affiche l'erreur originale.
-          }
+        if (nearestAssignedSite) {
+          throw new Error(
+            `Vous êtes actuellement à environ ${Math.round(nearestAssignedSite.distanceM)} m de votre site attribué « ${nearestAssignedSite.site.site_name } ». Vous devez être dans son périmètre autorisé pour pointer.`
+          );
         }
 
-        toast({
-          title:
-            'Impossible de pointer',
-          description:
-            getErrorMessage(error),
-          variant:
-            'destructive',
-        });
-      } finally {
-        setSubmitting(false);
+        throw new Error(
+          "Votre position ne correspond à aucun site qui vous est attribué. Vous ne pouvez pas pointer sur un site auquel vous n’êtes pas affecté."
+        );
       }
-    };
 
+      const now = new Date();
+
+      event = {
+        id: crypto.randomUUID(),
+        type: 'CLOCK_IN',
+        siteId: detected.site.site_id,
+        occurredAt: now.toISOString(),
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracyM: position.coords.accuracy,
+        clientEventId: createClientEventId(),
+        attempts: 0,
+      };
+
+      console.log('CLOCK_IN EVENT ENVOYÉ', {
+        siteId: event.siteId,
+        siteName: detected.site.site_name,
+        distanceM: Math.round(detected.distanceM),
+        latitude: event.latitude,
+        longitude: event.longitude,
+        accuracyM: event.accuracyM,
+        occurredAt: event.occurredAt,
+        clientEventId: event.clientEventId,
+        deviceRecordedAt: event.occurredAt,
+      });
+
+      if (!navigator.onLine) {
+        queueEvent(event);
+
+        toast({
+          title: 'Arrivée enregistrée hors connexion',
+          description:
+            `Site détecté : ${detected.site.site_name}. Le pointage sera synchronisé dès que la connexion reviendra.`,
+        });
+
+        return;
+      }
+
+      await executeAttendanceRpc(event);
+
+      await loadTodayRecord();
+      await loadHistory();
+
+      toast({
+        title: 'Arrivée enregistrée',
+        description:
+          `Site détecté par GPS : ${detected.site.site_name} (${Math.round(detected.distanceM)} m du centre du site).`,
+      });
+    } catch (error: unknown) {
+      console.error('Erreur CLOCK_IN:', {
+        error,
+        event,
+        online: navigator.onLine,
+      });
+
+      if (
+        event &&
+        (!navigator.onLine || isNetworkError(error))
+      ) {
+        queueEvent(event);
+
+        toast({
+          title: 'Connexion interrompue',
+          description:
+            `Le pointage sur ${
+              sites.find((site) => site.site_id === event?.siteId)?.site_name ?? 'le site détecté'
+            } a été conservé localement et sera synchronisé dès que la connexion reviendra.`,
+        });
+
+        return;
+      }
+
+      toast({
+        title: 'Impossible d’enregistrer l’arrivée',
+        description: getAttendanceErrorMessage(error),
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
   /* ==========================================================
    * CLOCK OUT
    * ======================================================== */
-
   const handleClockOut =
     async () => {
       if (
@@ -1253,8 +1400,7 @@ export default function Attendance() {
           (site) =>
             site.site_id ===
             todayRecord.site_id
-        ) ??
-        selectedSite;
+        );
 
       if (!attendanceSite) {
         toast({
@@ -1272,37 +1418,44 @@ export default function Attendance() {
       setSubmitting(true);
 
       try {
-        const position =
-          await getPosition();
+        const siteNeedsGps =
+          attendanceSite.gps_required ||
+          (
+            attendanceSite.latitude !== null &&
+            attendanceSite.longitude !== null
+          );
 
-        const now =
-          new Date();
+        let latitude: number | null = null;
+        let longitude: number | null = null;
+        let accuracyM: number | null = null;
+
+        if (siteNeedsGps) {
+          const position = await getPosition(
+            attendanceSite.max_gps_accuracy_m,
+            20000
+          );
+
+          latitude =
+            position.coords.latitude;
+
+          longitude =
+            position.coords.longitude;
+
+          accuracyM =
+            position.coords.accuracy;
+        }
+
+        const now = new Date();
 
         const event: PendingEvent = {
-          id:
-            crypto.randomUUID(),
-
-          type:
-            'CLOCK_OUT',
-
-          siteId:
-            attendanceSite.site_id,
-
-          occurredAt:
-            now.toISOString(),
-
-          latitude:
-            position.coords.latitude,
-
-          longitude:
-            position.coords.longitude,
-
-          accuracyM:
-            position.coords.accuracy,
-
-          clientEventId:
-            createClientEventId(),
-
+          id: crypto.randomUUID(),
+          type: 'CLOCK_OUT',
+          siteId: attendanceSite.site_id,
+          occurredAt: now.toISOString(),
+          latitude,
+          longitude,
+          accuracyM,
+          clientEventId: createClientEventId(),
           attempts: 0,
         };
 
@@ -1428,7 +1581,7 @@ export default function Attendance() {
           title:
             'Impossible d’enregistrer le départ',
           description:
-            getErrorMessage(error),
+            getAttendanceErrorMessage(error),
           variant:
             'destructive',
         });
@@ -1615,13 +1768,19 @@ export default function Attendance() {
               'Erreur sortie site:',
               error
             );
+
+            toast({
+              title: 'Surveillance GPS',
+              description: getAttendanceErrorMessage(error),
+              variant: 'destructive',
+            });
           }
         } finally {
           processingLocationRef.current =
             false;
         }
       },
-      [todayRecord]
+      [todayRecord, toast]
     );
 
   /* ==========================================================
@@ -1672,11 +1831,18 @@ export default function Attendance() {
             'Erreur confirmation sortie:',
             error
           );
+
+          toast({
+            title: 'Impossible de confirmer la sortie',
+            description: getAttendanceErrorMessage(error),
+            variant: 'destructive',
+          });
         }
       },
       [
         loadEvents,
         loadTodayRecord,
+        toast,
       ]
     );
 
@@ -1880,7 +2046,17 @@ export default function Attendance() {
             if (
               currentSite.max_gps_accuracy_m > 0 &&
               position.coords.accuracy >
-                currentSite.max_gps_accuracy_m
+              currentSite.max_gps_accuracy_m
+            ) {
+              return;
+            }
+
+            if (
+              !Number.isFinite(
+                position.coords.accuracy
+              ) ||
+              position.coords.accuracy <= 0 ||
+              position.coords.accuracy > 10000
             ) {
               return;
             }
@@ -1944,6 +2120,26 @@ export default function Attendance() {
               'GPS monitoring:',
               error
             );
+
+            if (error.code === 1) {
+              toast({
+                title: 'Autorisation GPS requise',
+                description: 'Autorisez la localisation dans votre navigateur pour continuer la surveillance du site.',
+                variant: 'destructive',
+              });
+            } else if (error.code === 2) {
+              toast({
+                title: 'Position GPS indisponible',
+                description: 'La surveillance GPS ne parvient plus à obtenir votre position.',
+                variant: 'destructive',
+              });
+            } else if (error.code === 3) {
+              toast({
+                title: 'Délai GPS dépassé',
+                description: 'La surveillance GPS n’a pas obtenu votre position à temps. Vérifiez votre localisation.',
+                variant: 'destructive',
+              });
+            }
           },
           {
             enableHighAccuracy: true,
@@ -2167,7 +2363,7 @@ export default function Attendance() {
         </div>
 
         {/* ====================================================
-         * SITE SELECTOR
+         * ASSIGNED SITES / GPS DETECTION
          * ================================================== */}
 
         {!todayRecord && (
@@ -2175,7 +2371,7 @@ export default function Attendance() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <MapPin className="h-5 w-5 text-primary" />
-                Site de travail
+                Site de pointage
               </CardTitle>
             </CardHeader>
 
@@ -2184,31 +2380,13 @@ export default function Attendance() {
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
                   <div className="flex items-start gap-3">
                     <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5" />
-
                     <div>
                       <p className="font-medium text-amber-900">
                         Aucun site attribué
                       </p>
-
                       <p className="text-sm text-amber-800 mt-1">
                         Aucun site actif ne vous est actuellement attribué.
-                        Contactez votre responsable.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : sites.length === 1 ? (
-                <div className="rounded-lg border p-4">
-                  <div className="flex items-center gap-3">
-                    <MapPin className="h-5 w-5 text-primary" />
-
-                    <div>
-                      <p className="font-medium">
-                        {sites[0].site_name}
-                      </p>
-
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Site automatiquement sélectionné.
+                        Vous ne pouvez pas effectuer de pointage. Contactez votre responsable.
                       </p>
                     </div>
                   </div>
@@ -2216,40 +2394,29 @@ export default function Attendance() {
               ) : (
                 <div className="space-y-3">
                   <p className="text-sm text-muted-foreground">
-                    Vous êtes affecté à plusieurs sites.
-                    Sélectionnez le site sur lequel vous allez
-                    effectuer votre pointage.
+                    Le site n’est plus choisi manuellement. Au moment du pointage,
+                    votre position GPS est comparée aux sites qui vous sont attribués.
                   </p>
 
-                  <Select
-                    value={
-                      selectedSiteId ?? undefined
-                    }
-                    onValueChange={
-                      handleSiteChange
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Sélectionner un site" />
-                    </SelectTrigger>
+                  <div className="rounded-lg border bg-muted/30 p-4">
+                    <p className="text-sm font-medium">Sites auxquels vous êtes affecté</p>
+                    <ul className="mt-2 space-y-2">
+                      {sites.map((site) => (
+                        <li key={site.site_id} className="flex items-center gap-2 text-sm">
+                          <MapPin className="h-4 w-4 text-primary" />
+                          <span>{site.site_name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            · rayon {site.location_radius_m} m
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
 
-                    <SelectContent>
-                      {sites.map(
-                        (site) => (
-                          <SelectItem
-                            key={
-                              site.site_id
-                            }
-                            value={
-                              site.site_id
-                            }
-                          >
-                            {site.site_name}
-                          </SelectItem>
-                        )
-                      )}
-                    </SelectContent>
-                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Si vous êtes physiquement sur un autre site, le pointage sera refusé
+                    même si ce site appartient à votre structure.
+                  </p>
                 </div>
               )}
             </CardContent>
@@ -2283,28 +2450,21 @@ export default function Attendance() {
 
             {!todayRecord && (
               <div className="space-y-4">
-                {selectedSite && (
-                  <div className="rounded-lg border p-4">
-                    <div className="flex items-start gap-3">
-                      <MapPin className="h-5 w-5 text-primary mt-0.5" />
-
-                      <div>
-                        <p className="font-medium">
-                          Site sélectionné
-                        </p>
-
-                        <p className="text-sm text-muted-foreground">
-                          {selectedSite.site_name}
-                        </p>
-
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Rayon autorisé :{' '}
-                          {selectedSite.location_radius_m} m
-                        </p>
-                      </div>
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+                  <div className="flex items-start gap-3">
+                    <MapPin className="h-5 w-5 text-primary mt-0.5" />
+                    <div>
+                      <p className="font-medium">
+                        Site déterminé automatiquement
+                      </p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Votre GPS sera utilisé au moment du clic pour identifier
+                        le site sur lequel vous vous trouvez. Vous ne pouvez pointer
+                        que sur un site qui vous est attribué.
+                      </p>
                     </div>
                   </div>
-                )}
+                </div>
 
                 <Button
                   onClick={
@@ -2312,7 +2472,6 @@ export default function Attendance() {
                   }
                   disabled={
                     submitting ||
-                    !selectedSite ||
                     sites.length === 0
                   }
                   className="w-full"
@@ -2367,11 +2526,11 @@ export default function Attendance() {
                   <span className="font-semibold">
                     {todayRecord.check_in
                       ? format(
-                          new Date(
-                            todayRecord.check_in
-                          ),
-                          'HH:mm'
-                        )
+                        new Date(
+                          todayRecord.check_in
+                        ),
+                        'HH:mm'
+                      )
                       : '—'}
                   </span>
                 </div>
@@ -2380,21 +2539,21 @@ export default function Attendance() {
 
                 {Boolean(
                   todayRecord.late_minutes &&
-                    todayRecord.late_minutes >
-                      0
+                  todayRecord.late_minutes >
+                  0
                 ) && (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
-                    <p className="text-sm text-amber-800 flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4" />
+                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-sm text-amber-800 flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4" />
 
-                      Retard de{' '}
-                      {
-                        todayRecord.late_minutes
-                      }{' '}
-                      minute(s)
-                    </p>
-                  </div>
-                )}
+                        Retard de{' '}
+                        {
+                          todayRecord.late_minutes
+                        }{' '}
+                        minute(s)
+                      </p>
+                    </div>
+                  )}
 
                 {/* GPS MONITORING */}
 
@@ -2467,11 +2626,11 @@ export default function Attendance() {
 
                     {todayRecord.check_out_method ===
                       'gps_auto' && (
-                      <p className="text-xs text-green-600 mt-1">
-                        Départ détecté automatiquement
-                        par GPS.
-                      </p>
-                    )}
+                        <p className="text-xs text-green-600 mt-1">
+                          Départ détecté automatiquement
+                          par GPS.
+                        </p>
+                      )}
                   </div>
                 )}
 
@@ -2526,23 +2685,23 @@ export default function Attendance() {
                         <div className="mt-1">
                           {event.event_type ===
                             'CLOCK_IN' && (
-                            <LogIn className="h-4 w-4 text-primary" />
-                          )}
+                              <LogIn className="h-4 w-4 text-primary" />
+                            )}
 
                           {event.event_type ===
                             'SITE_EXIT' && (
-                            <LogOut className="h-4 w-4 text-amber-600" />
-                          )}
+                              <LogOut className="h-4 w-4 text-amber-600" />
+                            )}
 
                           {event.event_type ===
                             'SITE_ENTER' && (
-                            <MapPin className="h-4 w-4 text-green-600" />
-                          )}
+                              <MapPin className="h-4 w-4 text-green-600" />
+                            )}
 
                           {event.event_type ===
                             'CLOCK_OUT' && (
-                            <CheckCircle2 className="h-4 w-4 text-green-600" />
-                          )}
+                              <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            )}
                         </div>
 
                         <div className="flex-1">
@@ -2563,7 +2722,7 @@ export default function Attendance() {
                             {' · '}
 
                             {event.event_method ===
-                            'gps_auto'
+                              'gps_auto'
                               ? 'GPS'
                               : 'Manuel'}
                           </p>
@@ -2650,22 +2809,22 @@ export default function Attendance() {
                       <td className="px-4 py-3 text-sm font-medium">
                         {record.check_in
                           ? format(
-                              new Date(
-                                record.check_in
-                              ),
-                              'HH:mm'
-                            )
+                            new Date(
+                              record.check_in
+                            ),
+                            'HH:mm'
+                          )
                           : '—'}
                       </td>
 
                       <td className="px-4 py-3 text-sm">
                         {record.check_out
                           ? format(
-                              new Date(
-                                record.check_out
-                              ),
-                              'HH:mm'
-                            )
+                            new Date(
+                              record.check_out
+                            ),
+                            'HH:mm'
+                          )
                           : '—'}
                       </td>
 
@@ -2680,16 +2839,16 @@ export default function Attendance() {
 
                 {history.length ===
                   0 && (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className="px-4 py-8 text-center text-muted-foreground"
-                    >
-                      Aucun historique de
-                      pointage.
-                    </td>
-                  </tr>
-                )}
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-4 py-8 text-center text-muted-foreground"
+                      >
+                        Aucun historique de
+                        pointage.
+                      </td>
+                    </tr>
+                  )}
               </tbody>
             </table>
           </div>
