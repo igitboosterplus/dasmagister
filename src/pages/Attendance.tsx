@@ -1,14 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
+
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
 import { useToast } from '@/hooks/use-toast';
 
 import {
@@ -20,16 +37,34 @@ import {
   LogOut,
   MapPin,
   Radio,
+  RefreshCw,
+  Wifi,
   WifiOff,
 } from 'lucide-react';
 
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
+/* ============================================================
+ * TYPES
+ * ========================================================== */
 
-// ============================================================
-// TYPES
-// ============================================================
+type EventType =
+  | 'CLOCK_IN'
+  | 'SITE_EXIT'
+  | 'SITE_ENTER'
+  | 'CLOCK_OUT';
+
+type EventMethod =
+  | 'manual'
+  | 'gps_auto'
+  | 'system'
+  | 'manager';
+
+type ZoneState =
+  | 'inside'
+  | 'outside'
+  | null;
 
 interface SiteContext {
   site_id: string;
@@ -46,6 +81,7 @@ interface AttendanceRecord {
   employee_id: string;
   site_id: string;
   attendance_date: string;
+
   check_in: string | null;
   check_out: string | null;
 
@@ -72,17 +108,8 @@ interface AttendanceEvent {
   employee_id: string;
   site_id: string;
 
-  event_type:
-  | 'CLOCK_IN'
-  | 'SITE_EXIT'
-  | 'SITE_ENTER'
-  | 'CLOCK_OUT';
-
-  event_method:
-  | 'manual'
-  | 'gps_auto'
-  | 'system'
-  | 'manager';
+  event_type: EventType;
+  event_method: EventMethod;
 
   occurred_at: string;
 
@@ -103,11 +130,9 @@ interface AttendanceEvent {
 interface PendingEvent {
   id: string;
 
-  type:
-  | 'CLOCK_IN'
-  | 'SITE_EXIT'
-  | 'SITE_ENTER'
-  | 'CLOCK_OUT';
+  type: EventType;
+
+  siteId: string;
 
   occurredAt: string;
 
@@ -116,134 +141,242 @@ interface PendingEvent {
   accuracyM: number | null;
 
   clientEventId: string;
+
+  attempts: number;
 }
 
+/* ============================================================
+ * CONSTANTES
+ * ========================================================== */
 
-// ============================================================
-// CONSTANTES
-// ============================================================
+const OFFLINE_QUEUE_KEY = 'attendance_event_queue_v3';
 
-const OFFLINE_QUEUE_KEY =
-  'attendance_event_queue_v2';
+const SELECTED_SITE_KEY = 'attendance_selected_site_v3';
 
-const EXIT_CONFIRMATION_MS =
-  6 * 60 * 1000;
+const EXIT_CONFIRMATION_MS = 6 * 60 * 1000;
 
-const END_OF_DAY_WINDOW_MINUTES = 30;
+const HISTORY_LIMIT = 30;
 
+/* ============================================================
+ * HELPERS
+ * ========================================================== */
 
-// ============================================================
-// HELPERS
-// ============================================================
+function createClientEventId(): string {
+  return crypto.randomUUID();
+}
 
 function loadQueue(): PendingEvent[] {
   try {
-    const raw =
-      localStorage.getItem(
-        OFFLINE_QUEUE_KEY
-      );
+    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
 
     if (!raw) {
       return [];
     }
 
-    return JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(
+      (item): item is PendingEvent =>
+        typeof item === 'object' &&
+        item !== null &&
+        'id' in item &&
+        'type' in item &&
+        'siteId' in item &&
+        'occurredAt' in item &&
+        'clientEventId' in item
+    );
   } catch {
     return [];
   }
 }
 
-
-function saveQueue(
-  queue: PendingEvent[]
-) {
+function saveQueue(queue: PendingEvent[]): void {
   localStorage.setItem(
     OFFLINE_QUEUE_KEY,
     JSON.stringify(queue)
   );
 }
 
-
-function createClientEventId() {
-  return crypto.randomUUID();
+function loadSelectedSiteId(): string | null {
+  try {
+    return localStorage.getItem(SELECTED_SITE_KEY);
+  } catch {
+    return null;
+  }
 }
 
+function saveSelectedSiteId(siteId: string): void {
+  try {
+    localStorage.setItem(
+      SELECTED_SITE_KEY,
+      siteId
+    );
+  } catch {
+    // localStorage peut être indisponible.
+  }
+}
 
-function getPosition(): Promise<GeolocationPosition> {
-  return new Promise(
-    (resolve, reject) => {
-      if (!('geolocation' in navigator)) {
-        reject(
-          new Error(
-            'La géolocalisation n’est pas disponible sur cet appareil.'
-          )
-        );
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
 
-        return;
-      }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return error.message;
+  }
 
-      navigator.geolocation.getCurrentPosition(
-        resolve,
-        (error) => {
-          switch (error.code) {
-            case error.PERMISSION_DENIED:
-              reject(
-                new Error(
-                  'L’autorisation GPS a été refusée.'
-                )
-              );
-              break;
+  return 'Une erreur inattendue est survenue.';
+}
 
-            case error.POSITION_UNAVAILABLE:
-              reject(
-                new Error(
-                  'Position GPS indisponible.'
-                )
-              );
-              break;
+function isNetworkError(error: unknown): boolean {
+  if (
+    typeof error === 'object' &&
+    error !== null
+  ) {
+    if (
+      'status' in error &&
+      typeof error.status === 'number' &&
+      error.status >= 500
+    ) {
+      return true;
+    }
 
-            case error.TIMEOUT:
-              reject(
-                new Error(
-                  'Le GPS met trop de temps à répondre.'
-                )
-              );
-              break;
+    if (
+      'message' in error &&
+      typeof error.message === 'string'
+    ) {
+      const message = error.message.toLowerCase();
 
-            default:
-              reject(
-                new Error(
-                  'Impossible de récupérer la position GPS.'
-                )
-              );
-          }
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 0,
-        }
+      return (
+        message.includes('failed to fetch') ||
+        message.includes('network') ||
+        message.includes('timeout') ||
+        message.includes('connection')
       );
     }
+  }
+
+  return false;
+}
+
+function getPosition(): Promise<GeolocationPosition> {
+  return new Promise((resolve, reject) => {
+    if (!('geolocation' in navigator)) {
+      reject(
+        new Error(
+          'La géolocalisation n’est pas disponible sur cet appareil.'
+        )
+      );
+
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      resolve,
+      (error) => {
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            reject(
+              new Error(
+                'L’autorisation GPS a été refusée.'
+              )
+            );
+            break;
+
+          case error.POSITION_UNAVAILABLE:
+            reject(
+              new Error(
+                'Position GPS indisponible.'
+              )
+            );
+            break;
+
+          case error.TIMEOUT:
+            reject(
+              new Error(
+                'Le GPS met trop de temps à répondre.'
+              )
+            );
+            break;
+
+          default:
+            reject(
+              new Error(
+                'Impossible de récupérer la position GPS.'
+              )
+            );
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
+    );
+  });
+}
+
+function calculateDistance(
+  latitude1: number,
+  longitude1: number,
+  latitude2: number,
+  longitude2: number
+): number {
+  const earthRadius = 6371000;
+
+  const toRadians = (value: number) =>
+    (value * Math.PI) / 180;
+
+  const dLatitude = toRadians(
+    latitude2 - latitude1
+  );
+
+  const dLongitude = toRadians(
+    longitude2 - longitude1
+  );
+
+  const a =
+    Math.sin(dLatitude / 2) ** 2 +
+    Math.cos(toRadians(latitude1)) *
+      Math.cos(toRadians(latitude2)) *
+      Math.sin(dLongitude / 2) ** 2;
+
+  return (
+    earthRadius *
+    2 *
+    Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1 - a)
+    )
   );
 }
 
-
-// ============================================================
-// COMPONENT
-// ============================================================
+/* ============================================================
+ * COMPONENT
+ * ========================================================== */
 
 export default function Attendance() {
   const { profile } = useAuth();
   const { toast } = useToast();
 
+  /* ----------------------------------------------------------
+   * DATA
+   * -------------------------------------------------------- */
 
-  // ----------------------------------------------------------
-  // DATA
-  // ----------------------------------------------------------
+  const [sites, setSites] =
+    useState<SiteContext[]>([]);
 
-  const [site, setSite] =
-    useState<SiteContext | null>(null);
+  const [selectedSiteId, setSelectedSiteId] =
+    useState<string | null>(null);
 
   const [todayRecord, setTodayRecord] =
     useState<AttendanceRecord | null>(null);
@@ -254,10 +387,9 @@ export default function Attendance() {
   const [history, setHistory] =
     useState<AttendanceRecord[]>([]);
 
-
-  // ----------------------------------------------------------
-  // UI
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+   * UI
+   * -------------------------------------------------------- */
 
   const [loading, setLoading] =
     useState(true);
@@ -281,10 +413,9 @@ export default function Attendance() {
   const [outsideSince, setOutsideSince] =
     useState<string | null>(null);
 
-
-  // ----------------------------------------------------------
-  // REFS
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+   * REFS
+   * -------------------------------------------------------- */
 
   const watchIdRef =
     useRef<number | null>(null);
@@ -293,55 +424,137 @@ export default function Attendance() {
     useRef<AttendanceEvent | null>(null);
 
   const exitTimerRef =
-    useRef<ReturnType<
-      typeof setTimeout
-    > | null>(null);
+    useRef<ReturnType<typeof setTimeout> | null>(
+      null
+    );
 
   const lastZoneStateRef =
-    useRef<
-      'inside' | 'outside' | null
-    >(null);
+    useRef<ZoneState>(null);
 
   const processingLocationRef =
     useRef(false);
 
+  /* ----------------------------------------------------------
+   * SELECTED SITE
+   * -------------------------------------------------------- */
 
-  // ==========================================================
-  // LOAD SITE
-  // ==========================================================
+  const selectedSite = useMemo(
+    () =>
+      sites.find(
+        (site) =>
+          site.site_id === selectedSiteId
+      ) ?? null,
+    [sites, selectedSiteId]
+  );
 
-  const loadSite = useCallback(
-    async () => {
+  /* ==========================================================
+   * LOAD SITES
+   * ======================================================== */
+
+  const loadSites = useCallback(
+    async (): Promise<SiteContext[]> => {
       if (!profile) {
-        return;
+        return [];
       }
+
+      /*
+       * Le modèle V3 utilise employee_sites.
+       *
+       * On ne lit volontairement PAS employees.site_id.
+       */
 
       const {
         data,
         error,
-      } = await supabase.rpc(
-        'get_my_attendance_site'
-      );
+      } = await supabase
+        .from('employee_sites')
+        .select(`
+          site_id,
+          sites (
+            id,
+            name,
+            latitude,
+            longitude,
+            location_radius_m,
+            max_gps_accuracy_m,
+            gps_required
+          )
+        `)
+        .eq(
+          'employee_id',
+          profile.id
+        )
+        .eq(
+          'is_active',
+          true
+        );
 
       if (error) {
         throw error;
       }
 
-      if (!data || data.length === 0) {
-        throw new Error(
-          'Aucun site de travail n’est actuellement attribué.'
-        );
+      const result: SiteContext[] = [];
+
+      for (const row of data ?? []) {
+        const site = row.sites;
+
+        if (!site) {
+          continue;
+        }
+
+        result.push({
+          site_id: site.id,
+          site_name: site.name,
+          latitude: site.latitude,
+          longitude: site.longitude,
+          location_radius_m:
+            site.location_radius_m,
+          max_gps_accuracy_m:
+            site.max_gps_accuracy_m,
+          gps_required:
+            site.gps_required,
+        });
       }
 
-      setSite(data[0] as SiteContext);
+      setSites(result);
+
+      /*
+       * Restaurer le dernier site choisi.
+       */
+      const savedSiteId =
+        loadSelectedSiteId();
+
+      const savedSiteExists =
+        savedSiteId &&
+        result.some(
+          (site) =>
+            site.site_id === savedSiteId
+        );
+
+      if (savedSiteExists) {
+        setSelectedSiteId(
+          savedSiteId
+        );
+      } else if (result.length === 1) {
+        setSelectedSiteId(
+          result[0].site_id
+        );
+
+        saveSelectedSiteId(
+          result[0].site_id
+        );
+      } else {
+        setSelectedSiteId(null);
+      }
+
+      return result;
     },
     [profile]
   );
 
-
-  // ==========================================================
-  // LOAD TODAY
-  // ==========================================================
+  /* ==========================================================
+   * LOAD TODAY
+   * ======================================================== */
 
   const loadTodayRecord =
     useCallback(async () => {
@@ -398,10 +611,9 @@ export default function Attendance() {
       );
     }, [profile]);
 
-
-  // ==========================================================
-  // LOAD EVENTS
-  // ==========================================================
+  /* ==========================================================
+   * LOAD EVENTS
+   * ======================================================== */
 
   const loadEvents =
     useCallback(async () => {
@@ -453,10 +665,9 @@ export default function Attendance() {
       );
     }, [todayRecord]);
 
-
-  // ==========================================================
-  // LOAD HISTORY
-  // ==========================================================
+  /* ==========================================================
+   * LOAD HISTORY
+   * ======================================================== */
 
   const loadHistory =
     useCallback(async () => {
@@ -498,7 +709,7 @@ export default function Attendance() {
             ascending: false,
           }
         )
-        .limit(30);
+        .limit(HISTORY_LIMIT);
 
       if (error) {
         throw error;
@@ -509,26 +720,24 @@ export default function Attendance() {
       );
     }, [profile]);
 
-
-  // ==========================================================
-  // REFRESH
-  // ==========================================================
+  /* ==========================================================
+   * REFRESH
+   * ======================================================== */
 
   const refreshAll =
     useCallback(async () => {
-      await loadSite();
+      await loadSites();
       await loadTodayRecord();
       await loadHistory();
     }, [
-      loadSite,
+      loadSites,
       loadTodayRecord,
       loadHistory,
     ]);
 
-
-  // ==========================================================
-  // OFFLINE QUEUE
-  // ==========================================================
+  /* ==========================================================
+   * QUEUE
+   * ======================================================== */
 
   const refreshPendingCount =
     useCallback(() => {
@@ -536,7 +745,6 @@ export default function Attendance() {
         loadQueue().length
       );
     }, []);
-
 
   const queueEvent =
     useCallback(
@@ -557,10 +765,102 @@ export default function Attendance() {
       []
     );
 
+  /* ==========================================================
+   * RPC HELPER
+   * ======================================================== */
 
-  // ==========================================================
-  // SYNC OFFLINE EVENTS
-  // ==========================================================
+  const executeAttendanceRpc =
+    useCallback(
+      async (
+        event: PendingEvent
+      ): Promise<void> => {
+        const args = {
+          p_site_id:
+            event.siteId,
+
+          p_latitude:
+            event.latitude,
+
+          p_longitude:
+            event.longitude,
+
+          p_accuracy_m:
+            event.accuracyM,
+
+          p_occurred_at:
+            event.occurredAt,
+
+          p_client_event_id:
+            event.clientEventId,
+
+          p_device_recorded_at:
+            event.occurredAt,
+        };
+
+        switch (event.type) {
+          case 'CLOCK_IN': {
+            const { error } =
+              await supabase.rpc(
+                'clock_in',
+                args
+              );
+
+            if (error) {
+              throw error;
+            }
+
+            break;
+          }
+
+          case 'CLOCK_OUT': {
+            const { error } =
+              await supabase.rpc(
+                'clock_out',
+                args
+              );
+
+            if (error) {
+              throw error;
+            }
+
+            break;
+          }
+
+          case 'SITE_EXIT': {
+            const { error } =
+              await supabase.rpc(
+                'record_site_exit',
+                args
+              );
+
+            if (error) {
+              throw error;
+            }
+
+            break;
+          }
+
+          case 'SITE_ENTER': {
+            const { error } =
+              await supabase.rpc(
+                'record_site_enter',
+                args
+              );
+
+            if (error) {
+              throw error;
+            }
+
+            break;
+          }
+        }
+      },
+      []
+    );
+
+  /* ==========================================================
+   * SYNC QUEUE
+   * ======================================================== */
 
   const syncQueue =
     useCallback(async () => {
@@ -578,125 +878,87 @@ export default function Attendance() {
 
       const remaining: PendingEvent[] = [];
 
+      let synchronized = 0;
+
       for (const event of queue) {
         try {
-          const positionArgs = {
-            p_latitude:
-              event.latitude,
-            p_longitude:
-              event.longitude,
-            p_accuracy_m:
-              event.accuracyM,
-            p_occurred_at:
-              event.occurredAt,
-            p_client_event_id:
-              event.clientEventId,
-            p_device_recorded_at:
-              event.occurredAt,
-          };
+          await executeAttendanceRpc(
+            event
+          );
 
-
-          if (
-            event.type ===
-            'CLOCK_IN'
-          ) {
-            await supabase.rpc(
-              'clock_in',
-              positionArgs
-            );
-          }
-
-
-          if (
-            event.type ===
-            'SITE_EXIT'
-          ) {
-            await supabase.rpc(
-              'record_site_exit',
-              positionArgs
-            );
-          }
-
-
-          if (
-            event.type ===
-            'SITE_ENTER'
-          ) {
-            await supabase.rpc(
-              'record_site_enter',
-              positionArgs
-            );
-          }
-
-
-          if (
-            event.type ===
-            'CLOCK_OUT'
-          ) {
-            await supabase.rpc(
-              'clock_out',
-              positionArgs
-            );
-          }
-
-        } catch (error: any) {
+          synchronized++;
+        } catch (error: unknown) {
           console.error(
-            'Erreur synchronisation événement:',
+            'Erreur synchronisation:',
             event,
             error
           );
 
-          // Conserver l'événement uniquement s'il s'agit d'une erreur réseau ou d'un timeout.
-          const isNetworkError =
-            error?.message === 'Failed to fetch' ||
-            error?.message?.includes('Network') ||
-            error?.message?.includes('network') ||
-            (error?.status && error.status >= 500);
+          /*
+           * Erreur réseau :
+           * on conserve l'événement.
+           */
+          if (
+            isNetworkError(error)
+          ) {
+            remaining.push({
+              ...event,
+              attempts:
+                event.attempts + 1,
+            });
 
-          if (isNetworkError) {
-            remaining.push(event);
-          } else {
-            console.warn(
-              'Evénement écarté suite à une erreur définitive (ex: règle métier, déjà pointé):',
-              error
-            );
+            continue;
           }
+
+          /*
+           * Erreur métier :
+           *
+           * On ne renvoie PAS indéfiniment
+           * le même événement.
+           */
+          console.warn(
+            'Événement rejeté définitivement:',
+            event,
+            getErrorMessage(error)
+          );
         }
       }
 
-      saveQueue(remaining);
+      saveQueue(
+        remaining
+      );
 
       setPendingCount(
         remaining.length
       );
 
-      if (
-        remaining.length <
-        queue.length
-      ) {
-        await refreshAll();
+      if (synchronized > 0) {
+        await loadTodayRecord();
+        await loadHistory();
 
         toast({
           title:
             'Synchronisation effectuée',
           description:
-            'Les événements de présence ont été synchronisés.',
+            `${synchronized} événement(s) synchronisé(s).`,
         });
       }
     }, [
-      refreshAll,
+      executeAttendanceRpc,
+      loadHistory,
+      loadTodayRecord,
       toast,
     ]);
 
-
-  // ==========================================================
-  // ONLINE / OFFLINE
-  // ==========================================================
+  /* ==========================================================
+   * ONLINE / OFFLINE
+   * ======================================================== */
 
   useEffect(() => {
     const handleOnline =
       () => {
         setIsOnline(true);
+
         void syncQueue();
       };
 
@@ -733,47 +995,45 @@ export default function Attendance() {
     syncQueue,
   ]);
 
-
-  // ==========================================================
-  // INITIALISATION
-  // ==========================================================
+  /* ==========================================================
+   * INITIALISATION
+   * ======================================================== */
 
   useEffect(() => {
     if (!profile) {
       return;
     }
 
-    const init =
+    const initialize =
       async () => {
         try {
           setLoading(true);
 
           await refreshAll();
-          await syncQueue();
 
-        } catch (error) {
+          if (navigator.onLine) {
+            await syncQueue();
+          }
+        } catch (error: unknown) {
           console.error(
-            'Erreur initialisation attendance:',
+            'Erreur initialisation Attendance:',
             error
           );
 
           toast({
             title:
-              'Erreur',
+              'Erreur de chargement',
             description:
-              error instanceof Error
-                ? error.message
-                : 'Impossible de charger le pointage.',
+              getErrorMessage(error),
             variant:
               'destructive',
           });
-
         } finally {
           setLoading(false);
         }
       };
 
-    void init();
+    void initialize();
   }, [
     profile,
     refreshAll,
@@ -781,14 +1041,57 @@ export default function Attendance() {
     toast,
   ]);
 
+  /* ==========================================================
+   * SITE SELECTION
+   * ======================================================== */
 
-  // ==========================================================
-  // CLOCK IN
-  // ==========================================================
+  const handleSiteChange =
+    useCallback(
+      (siteId: string) => {
+        setSelectedSiteId(
+          siteId
+        );
+
+        saveSelectedSiteId(
+          siteId
+        );
+      },
+      []
+    );
+
+  /* ==========================================================
+   * CLOCK IN
+   * ======================================================== */
 
   const handleClockIn =
     async () => {
       if (!profile) {
+        return;
+      }
+
+      if (!selectedSite) {
+        toast({
+          title:
+            'Site requis',
+          description:
+            'Sélectionnez le site sur lequel vous travaillez.',
+          variant:
+            'destructive',
+        });
+
+        return;
+      }
+
+      if (todayRecord) {
+        toast({
+          title:
+            'Pointage déjà existant',
+          description:
+            'Une présence existe déjà pour aujourd’hui.',
+          variant:
+            'destructive',
+        });
+
         return;
       }
 
@@ -801,194 +1104,143 @@ export default function Attendance() {
         const now =
           new Date();
 
-        const clientEventId =
-          createClientEventId();
+        const event: PendingEvent = {
+          id:
+            crypto.randomUUID(),
 
-        const args = {
-          p_latitude:
+          type:
+            'CLOCK_IN',
+
+          siteId:
+            selectedSite.site_id,
+
+          occurredAt:
+            now.toISOString(),
+
+          latitude:
             position.coords.latitude,
 
-          p_longitude:
+          longitude:
             position.coords.longitude,
 
-          p_accuracy_m:
+          accuracyM:
             position.coords.accuracy,
 
-          p_occurred_at:
-            now.toISOString(),
+          clientEventId:
+            createClientEventId(),
 
-          p_client_event_id:
-            clientEventId,
-
-          p_device_recorded_at:
-            now.toISOString(),
+          attempts: 0,
         };
 
-
-        // ----------------------------------------------------
-        // OFFLINE
-        // ----------------------------------------------------
-
+        /*
+         * OFFLINE
+         */
         if (!navigator.onLine) {
-          queueEvent({
-            id:
-              crypto.randomUUID(),
-
-            type:
-              'CLOCK_IN',
-
-            occurredAt:
-              now.toISOString(),
-
-            latitude:
-              position.coords.latitude,
-
-            longitude:
-              position.coords.longitude,
-
-            accuracyM:
-              position.coords.accuracy,
-
-            clientEventId,
-          });
+          queueEvent(event);
 
           toast({
             title:
-              'Pointage enregistré',
+              'Arrivée enregistrée localement',
             description:
-              'Votre arrivée sera synchronisée dès que la connexion reviendra.',
+              'Elle sera synchronisée dès que la connexion reviendra.',
           });
-
-          await loadTodayRecord();
 
           return;
         }
 
-
-        // ----------------------------------------------------
-        // ONLINE
-        // ----------------------------------------------------
-
-        const {
-          data,
-          error,
-        } = await supabase.rpc(
-          'clock_in',
-          args
+        /*
+         * ONLINE
+         */
+        await executeAttendanceRpc(
+          event
         );
 
-        if (error) {
-          throw error;
-        }
-
-
-        setTodayRecord(
-          data as AttendanceRecord
-        );
-
+        await loadTodayRecord();
+        await loadHistory();
 
         toast({
           title:
             'Arrivée enregistrée',
           description:
-            'Votre présence a bien été enregistrée.',
+            `Pointage effectué sur ${selectedSite.site_name}.`,
         });
+      } catch (error: unknown) {
+        /*
+         * Si la connexion vient de tomber
+         * pendant la requête, on met l'événement
+         * en queue plutôt que de perdre le pointage.
+         */
+        if (
+          !navigator.onLine ||
+          isNetworkError(error)
+        ) {
+          try {
+            const position =
+              await getPosition();
 
+            const now =
+              new Date();
 
-        await loadHistory();
+            queueEvent({
+              id:
+                crypto.randomUUID(),
 
-      } catch (error) {
+              type:
+                'CLOCK_IN',
+
+              siteId:
+                selectedSite.site_id,
+
+              occurredAt:
+                now.toISOString(),
+
+              latitude:
+                position.coords.latitude,
+
+              longitude:
+                position.coords.longitude,
+
+              accuracyM:
+                position.coords.accuracy,
+
+              clientEventId:
+                createClientEventId(),
+
+              attempts: 0,
+            });
+
+            toast({
+              title:
+                'Connexion interrompue',
+              description:
+                'Le pointage a été placé dans la file de synchronisation.',
+            });
+
+            return;
+          } catch {
+            // On affiche l'erreur originale.
+          }
+        }
+
         toast({
           title:
             'Impossible de pointer',
-
           description:
-            error instanceof Error
-              ? error.message
-              : 'Une erreur est survenue.',
-
+            getErrorMessage(error),
           variant:
             'destructive',
         });
-
       } finally {
         setSubmitting(false);
       }
     };
 
+  /* ==========================================================
+   * CLOCK OUT
+   * ======================================================== */
 
-  // ==========================================================
-  // DISTANCE SITE
-  // ==========================================================
-
-  const calculateDistance =
-    (
-      latitude: number,
-      longitude: number
-    ) => {
-      if (
-        !site ||
-        site.latitude === null ||
-        site.longitude === null
-      ) {
-        return null;
-      }
-
-      const R = 6371000;
-
-      const toRad =
-        (value: number) =>
-          (value * Math.PI) / 180;
-
-      const dLat =
-        toRad(
-          latitude -
-          site.latitude
-        );
-
-      const dLon =
-        toRad(
-          longitude -
-          site.longitude
-        );
-
-      const a =
-        Math.sin(dLat / 2) **
-        2 +
-        Math.cos(
-          toRad(latitude)
-        ) *
-        Math.cos(
-          toRad(site.latitude)
-        ) *
-        Math.sin(dLon / 2) **
-        2;
-
-      return (
-        R *
-        2 *
-        Math.atan2(
-          Math.sqrt(a),
-          Math.sqrt(1 - a)
-        )
-      );
-    };
-
-
-  // ==========================================================
-  // GPS : SORTIE DU SITE
-  // ==========================================================
-
-  const handleOutside =
-    async (
-      position: GeolocationPosition
-    ) => {
-      if (
-        processingLocationRef.current
-      ) {
-        return;
-      }
-
+  const handleClockOut =
+    async () => {
       if (
         !todayRecord ||
         todayRecord.check_out
@@ -996,29 +1248,234 @@ export default function Attendance() {
         return;
       }
 
-      processingLocationRef.current =
-        true;
+      const attendanceSite =
+        sites.find(
+          (site) =>
+            site.site_id ===
+            todayRecord.site_id
+        ) ??
+        selectedSite;
+
+      if (!attendanceSite) {
+        toast({
+          title:
+            'Site introuvable',
+          description:
+            'Impossible de déterminer le site de cette présence.',
+          variant:
+            'destructive',
+        });
+
+        return;
+      }
+
+      setSubmitting(true);
 
       try {
+        const position =
+          await getPosition();
+
         const now =
           new Date();
 
-        const clientEventId =
-          createClientEventId();
+        const event: PendingEvent = {
+          id:
+            crypto.randomUUID(),
 
+          type:
+            'CLOCK_OUT',
 
-        // ----------------------------------------------------
-        // Événement SITE_EXIT
-        // ----------------------------------------------------
+          siteId:
+            attendanceSite.site_id,
 
+          occurredAt:
+            now.toISOString(),
+
+          latitude:
+            position.coords.latitude,
+
+          longitude:
+            position.coords.longitude,
+
+          accuracyM:
+            position.coords.accuracy,
+
+          clientEventId:
+            createClientEventId(),
+
+          attempts: 0,
+        };
+
+        /*
+         * OFFLINE
+         */
         if (!navigator.onLine) {
-          queueEvent({
+          queueEvent(event);
+
+          setTodayRecord({
+            ...todayRecord,
+
+            check_out:
+              now.toISOString(),
+
+            check_out_method:
+              'manual',
+
+            attendance_status:
+              'completed',
+          });
+
+          stopMonitoring();
+
+          toast({
+            title:
+              'Départ enregistré localement',
+            description:
+              'Il sera synchronisé dès que la connexion reviendra.',
+          });
+
+          return;
+        }
+
+        /*
+         * ONLINE
+         */
+        await executeAttendanceRpc(
+          event
+        );
+
+        await loadTodayRecord();
+        await loadEvents();
+        await loadHistory();
+
+        stopMonitoring();
+
+        toast({
+          title:
+            'Départ enregistré',
+          description:
+            'Votre départ a bien été enregistré.',
+        });
+      } catch (error: unknown) {
+        if (
+          !navigator.onLine ||
+          isNetworkError(error)
+        ) {
+          try {
+            const position =
+              await getPosition();
+
+            const now =
+              new Date();
+
+            queueEvent({
+              id:
+                crypto.randomUUID(),
+
+              type:
+                'CLOCK_OUT',
+
+              siteId:
+                todayRecord.site_id,
+
+              occurredAt:
+                now.toISOString(),
+
+              latitude:
+                position.coords.latitude,
+
+              longitude:
+                position.coords.longitude,
+
+              accuracyM:
+                position.coords.accuracy,
+
+              clientEventId:
+                createClientEventId(),
+
+              attempts: 0,
+            });
+
+            setTodayRecord({
+              ...todayRecord,
+
+              check_out:
+                now.toISOString(),
+
+              check_out_method:
+                'manual',
+
+              attendance_status:
+                'completed',
+            });
+
+            stopMonitoring();
+
+            toast({
+              title:
+                'Départ enregistré localement',
+              description:
+                'Il sera synchronisé dès que la connexion reviendra.',
+            });
+
+            return;
+          } catch {
+            // Afficher l'erreur originale.
+          }
+        }
+
+        toast({
+          title:
+            'Impossible d’enregistrer le départ',
+          description:
+            getErrorMessage(error),
+          variant:
+            'destructive',
+        });
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+  /* ==========================================================
+   * HANDLE OUTSIDE
+   * ======================================================== */
+
+  const handleOutside =
+    useCallback(
+      async (
+        position: GeolocationPosition
+      ) => {
+        if (
+          processingLocationRef.current
+        ) {
+          return;
+        }
+
+        if (
+          !todayRecord ||
+          todayRecord.check_out
+        ) {
+          return;
+        }
+
+        processingLocationRef.current =
+          true;
+
+        try {
+          const now =
+            new Date();
+
+          const event: PendingEvent = {
             id:
               crypto.randomUUID(),
 
             type:
               'SITE_EXIT',
 
+            siteId:
+              todayRecord.site_id,
+
             occurredAt:
               now.toISOString(),
 
@@ -1031,344 +1488,311 @@ export default function Attendance() {
             accuracyM:
               position.coords.accuracy,
 
-            clientEventId,
-          });
+            clientEventId:
+              createClientEventId(),
 
-          setOutsideSince(
-            now.toISOString()
+            attempts: 0,
+          };
+
+          /*
+           * OFFLINE
+           */
+          if (!navigator.onLine) {
+            queueEvent(event);
+
+            setOutsideSince(
+              now.toISOString()
+            );
+
+            return;
+          }
+
+          /*
+           * ONLINE
+           */
+          const {
+            data,
+            error,
+          } = await supabase.rpc(
+            'record_site_exit',
+            {
+              p_site_id:
+                event.siteId,
+
+              p_latitude:
+                event.latitude,
+
+              p_longitude:
+                event.longitude,
+
+              p_accuracy_m:
+                event.accuracyM,
+
+              p_occurred_at:
+                event.occurredAt,
+
+              p_client_event_id:
+                event.clientEventId,
+
+              p_device_recorded_at:
+                event.occurredAt,
+            }
           );
 
+          if (error) {
+            throw error;
+          }
+
+          const exitEvent =
+            data as AttendanceEvent;
+
+          exitEventRef.current =
+            exitEvent;
+
+          setOutsideSince(
+            exitEvent.occurred_at
+          );
+
+          if (
+            exitTimerRef.current
+          ) {
+            clearTimeout(
+              exitTimerRef.current
+            );
+          }
+
+          exitTimerRef.current =
+            setTimeout(
+              () => {
+                void confirmExit(
+                  exitEvent
+                );
+              },
+              EXIT_CONFIRMATION_MS
+            );
+        } catch (error: unknown) {
+          /*
+           * Une sortie GPS ne doit pas
+           * disparaître si la connexion tombe.
+           */
+          if (
+            !navigator.onLine ||
+            isNetworkError(error)
+          ) {
+            queueEvent({
+              id:
+                crypto.randomUUID(),
+
+              type:
+                'SITE_EXIT',
+
+              siteId:
+                todayRecord.site_id,
+
+              occurredAt:
+                new Date().toISOString(),
+
+              latitude:
+                position.coords.latitude,
+
+              longitude:
+                position.coords.longitude,
+
+              accuracyM:
+                position.coords.accuracy,
+
+              clientEventId:
+                createClientEventId(),
+
+              attempts: 0,
+            });
+
+            setOutsideSince(
+              new Date().toISOString()
+            );
+          } else {
+            console.error(
+              'Erreur sortie site:',
+              error
+            );
+          }
+        } finally {
+          processingLocationRef.current =
+            false;
+        }
+      },
+      [todayRecord]
+    );
+
+  /* ==========================================================
+   * CONFIRM EXIT
+   * ======================================================== */
+
+  const confirmExit =
+    useCallback(
+      async (
+        exitEvent: AttendanceEvent
+      ) => {
+        if (!exitEvent.id) {
           return;
         }
 
-
-        const {
-          data,
-          error,
-        } = await supabase.rpc(
-          'record_site_exit',
-          {
-            p_latitude:
-              position.coords.latitude,
-
-            p_longitude:
-              position.coords.longitude,
-
-            p_accuracy_m:
-              position.coords.accuracy,
-
-            p_occurred_at:
-              now.toISOString(),
-
-            p_client_event_id:
-              clientEventId,
-
-            p_device_recorded_at:
-              now.toISOString(),
-          }
-        );
-
-
-        if (error) {
-          throw error;
+        if (!navigator.onLine) {
+          return;
         }
 
+        try {
+          const {
+            data,
+            error,
+          } = await supabase.rpc(
+            'confirm_site_exit',
+            {
+              p_event_id:
+                exitEvent.id,
 
-        const exitEvent =
-          data as AttendanceEvent;
+              p_confirmed_at:
+                new Date().toISOString(),
+            }
+          );
 
+          if (error) {
+            throw error;
+          }
 
-        exitEventRef.current =
-          exitEvent;
+          exitEventRef.current =
+            data as AttendanceEvent;
 
-        setOutsideSince(
-          exitEvent.occurred_at
-        );
+          await loadTodayRecord();
+          await loadEvents();
 
+          setOutsideSince(null);
+        } catch (error: unknown) {
+          console.error(
+            'Erreur confirmation sortie:',
+            error
+          );
+        }
+      },
+      [
+        loadEvents,
+        loadTodayRecord,
+      ]
+    );
 
-        // ----------------------------------------------------
-        // Timer 6 minutes
-        // ----------------------------------------------------
+  /* ==========================================================
+   * HANDLE INSIDE
+   * ======================================================== */
 
+  const handleInside =
+    useCallback(
+      async (
+        position: GeolocationPosition
+      ) => {
+        if (
+          !todayRecord ||
+          todayRecord.check_out
+        ) {
+          return;
+        }
+
+        /*
+         * Aucun événement si on était déjà
+         * à l'intérieur.
+         */
+        if (
+          lastZoneStateRef.current ===
+          'inside'
+        ) {
+          return;
+        }
+
+        lastZoneStateRef.current =
+          'inside';
+
+        /*
+         * Retour avant les 6 minutes :
+         * annuler la confirmation de sortie.
+         */
         if (
           exitTimerRef.current
         ) {
           clearTimeout(
             exitTimerRef.current
           );
+
+          exitTimerRef.current =
+            null;
         }
-
-
-        exitTimerRef.current =
-          setTimeout(
-            () => {
-              void confirmExit(
-                exitEvent
-              );
-            },
-            EXIT_CONFIRMATION_MS
-          );
-
-
-      } catch (error) {
-        console.error(
-          'Erreur sortie site:',
-          error
-        );
-      } finally {
-        processingLocationRef.current =
-          false;
-      }
-    };
-
-
-  // ==========================================================
-  // CONFIRMATION SORTIE
-  // ==========================================================
-
-  const confirmExit =
-    async (
-      exitEvent: AttendanceEvent
-    ) => {
-      if (
-        !exitEvent.id
-      ) {
-        return;
-      }
-
-      try {
-        if (!navigator.onLine) {
-          return;
-        }
-
-
-        const {
-          data,
-          error,
-        } = await supabase.rpc(
-          'confirm_site_exit',
-          {
-            p_event_id:
-              exitEvent.id,
-
-            p_confirmed_at:
-              new Date().toISOString(),
-          }
-        );
-
-
-        if (error) {
-          throw error;
-        }
-
-
-        const confirmed =
-          data as AttendanceEvent;
-
-
-        exitEventRef.current =
-          confirmed;
-
-
-        await loadTodayRecord();
-        await loadEvents();
-
-
-        if (
-          todayRecord?.scheduled_end &&
-          exitEvent.occurred_at
-        ) {
-          const exitTime =
-            new Date(
-              exitEvent.occurred_at
-            );
-
-          const scheduledEnd =
-            todayRecord
-              .scheduled_end;
-
-          const [
-            hours,
-            minutes,
-          ] =
-            scheduledEnd
-              .split(':')
-              .map(Number);
-
-          const end =
-            new Date(
-              exitTime
-            );
-
-          end.setHours(
-            hours,
-            minutes,
-            0,
-            0
-          );
-
-          const difference =
-            (
-              end.getTime() -
-              exitTime.getTime()
-            ) /
-            60000;
-
-          if (
-            difference >= 0 &&
-            difference <=
-            END_OF_DAY_WINDOW_MINUTES
-          ) {
-            toast({
-              title:
-                'Départ automatique',
-              description:
-                `Votre sortie de ${format(
-                  exitTime,
-                  'HH:mm'
-                )} a été considérée comme votre départ.`,
-            });
-          }
-        }
-
-      } catch (error) {
-        console.error(
-          'Erreur confirmation sortie:',
-          error
-        );
-      }
-    };
-
-
-  // ==========================================================
-  // GPS : RETOUR SUR SITE
-  // ==========================================================
-
-  const handleInside =
-    async (
-      position: GeolocationPosition
-    ) => {
-      if (
-        !todayRecord ||
-        todayRecord.check_out
-      ) {
-        return;
-      }
-
-      // ------------------------------------------------------
-      // Si on était déjà dedans :
-      // rien à faire.
-      // ------------------------------------------------------
-
-      if (
-        lastZoneStateRef.current ===
-        'inside'
-      ) {
-        return;
-      }
-
-
-      lastZoneStateRef.current =
-        'inside';
-
-
-      // ------------------------------------------------------
-      // Annuler le timer sortie
-      // ------------------------------------------------------
-
-      if (
-        exitTimerRef.current
-      ) {
-        clearTimeout(
-          exitTimerRef.current
-        );
-
-        exitTimerRef.current =
-          null;
-      }
-
-
-      const now =
-        new Date();
-
-      const clientEventId =
-        createClientEventId();
-
-
-      try {
-        if (!navigator.onLine) {
-          queueEvent({
-            id:
-              crypto.randomUUID(),
-
-            type:
-              'SITE_ENTER',
-
-            occurredAt:
-              now.toISOString(),
-
-            latitude:
-              position.coords.latitude,
-
-            longitude:
-              position.coords.longitude,
-
-            accuracyM:
-              position.coords.accuracy,
-
-            clientEventId,
-          });
-
-          setOutsideSince(null);
-
-          return;
-        }
-
-
-        await supabase.rpc(
-          'record_site_enter',
-          {
-            p_latitude:
-              position.coords.latitude,
-
-            p_longitude:
-              position.coords.longitude,
-
-            p_accuracy_m:
-              position.coords.accuracy,
-
-            p_occurred_at:
-              now.toISOString(),
-
-            p_client_event_id:
-              clientEventId,
-
-            p_device_recorded_at:
-              now.toISOString(),
-          }
-        );
-
 
         setOutsideSince(null);
 
-        exitEventRef.current =
-          null;
+        const now =
+          new Date();
 
+        const event: PendingEvent = {
+          id:
+            crypto.randomUUID(),
 
-        await loadEvents();
+          type:
+            'SITE_ENTER',
 
-      } catch (error) {
-        console.error(
-          'Erreur retour site:',
-          error
-        );
-      }
-    };
+          siteId:
+            todayRecord.site_id,
 
+          occurredAt:
+            now.toISOString(),
 
-  // ==========================================================
-  // SURVEILLANCE GPS
-  // ==========================================================
+          latitude:
+            position.coords.latitude,
+
+          longitude:
+            position.coords.longitude,
+
+          accuracyM:
+            position.coords.accuracy,
+
+          clientEventId:
+            createClientEventId(),
+
+          attempts: 0,
+        };
+
+        try {
+          if (!navigator.onLine) {
+            queueEvent(event);
+            return;
+          }
+
+          await executeAttendanceRpc(
+            event
+          );
+
+          await loadEvents();
+        } catch (error: unknown) {
+          if (
+            !navigator.onLine ||
+            isNetworkError(error)
+          ) {
+            queueEvent(event);
+          } else {
+            console.error(
+              'Erreur retour sur site:',
+              error
+            );
+          }
+        }
+      },
+      [
+        executeAttendanceRpc,
+        loadEvents,
+        todayRecord,
+      ]
+    );
+
+  /* ==========================================================
+   * GPS MONITORING
+   * ======================================================== */
 
   const startMonitoring =
     useCallback(() => {
@@ -1393,42 +1817,90 @@ export default function Attendance() {
         return;
       }
 
+      if (
+        !todayRecord ||
+        todayRecord.check_out
+      ) {
+        return;
+      }
+
+      const site =
+        sites.find(
+          (item) =>
+            item.site_id ===
+            todayRecord.site_id
+        );
+
+      if (!site) {
+        return;
+      }
+
+      /*
+       * Si le site n'a pas de coordonnées,
+       * aucune surveillance de périmètre
+       * ne peut être effectuée.
+       */
+      if (
+        site.latitude === null ||
+        site.longitude === null
+      ) {
+        setMonitoring(false);
+        return;
+      }
 
       const watchId =
         navigator.geolocation.watchPosition(
-          async (position) => {
+          async (
+            position
+          ) => {
             if (
-              !site ||
-              !todayRecord ||
-              todayRecord.check_out
+              processingLocationRef.current
             ) {
               return;
             }
 
+            const currentSite =
+              sites.find(
+                (item) =>
+                  item.site_id ===
+                  todayRecord.site_id
+              );
+
+            if (
+              !currentSite ||
+              currentSite.latitude === null ||
+              currentSite.longitude === null
+            ) {
+              return;
+            }
+
+            /*
+             * Contrôle de précision GPS.
+             */
+            if (
+              currentSite.max_gps_accuracy_m > 0 &&
+              position.coords.accuracy >
+                currentSite.max_gps_accuracy_m
+            ) {
+              return;
+            }
 
             const distance =
               calculateDistance(
                 position.coords.latitude,
-                position.coords.longitude
+                position.coords.longitude,
+                currentSite.latitude,
+                currentSite.longitude
               );
-
-
-            if (
-              distance === null
-            ) {
-              return;
-            }
-
 
             const isInside =
               distance <=
-              site.location_radius_m;
+              currentSite.location_radius_m;
 
-
-            // ------------------------------------------------
-            // Première position
-            // ------------------------------------------------
-
+            /*
+             * Première position :
+             * on initialise simplement l'état.
+             */
             if (
               lastZoneStateRef.current ===
               null
@@ -1441,11 +1913,9 @@ export default function Attendance() {
               return;
             }
 
-
-            // ------------------------------------------------
-            // INSIDE
-            // ------------------------------------------------
-
+            /*
+             * Retour dans la zone.
+             */
             if (isInside) {
               await handleInside(
                 position
@@ -1454,11 +1924,9 @@ export default function Attendance() {
               return;
             }
 
-
-            // ------------------------------------------------
-            // OUTSIDE
-            // ------------------------------------------------
-
+            /*
+             * Sortie de la zone.
+             */
             if (
               lastZoneStateRef.current ===
               'inside'
@@ -1470,7 +1938,6 @@ export default function Attendance() {
                 position
               );
             }
-
           },
           (error) => {
             console.warn(
@@ -1485,29 +1952,26 @@ export default function Attendance() {
           }
         );
 
-
       watchIdRef.current =
         watchId;
 
       setMonitoring(true);
-
-
     }, [
-      site,
+      handleInside,
+      handleOutside,
+      sites,
       todayRecord,
       toast,
     ]);
 
-
-  // ==========================================================
-  // STOP GPS
-  // ==========================================================
+  /* ==========================================================
+   * STOP GPS
+   * ======================================================== */
 
   const stopMonitoring =
     useCallback(() => {
       if (
-        watchIdRef.current !==
-        null
+        watchIdRef.current !== null
       ) {
         navigator.geolocation.clearWatch(
           watchIdRef.current
@@ -1516,7 +1980,6 @@ export default function Attendance() {
         watchIdRef.current =
           null;
       }
-
 
       if (
         exitTimerRef.current
@@ -1529,15 +1992,15 @@ export default function Attendance() {
           null;
       }
 
-
       setMonitoring(false);
 
+      lastZoneStateRef.current =
+        null;
     }, []);
 
-
-  // ==========================================================
-  // ACTIVATION SURVEILLANCE APRÈS CLOCK-IN
-  // ==========================================================
+  /* ==========================================================
+   * START / STOP MONITORING
+   * ======================================================== */
 
   useEffect(() => {
     if (
@@ -1554,180 +2017,32 @@ export default function Attendance() {
     stopMonitoring();
 
     return undefined;
-
   }, [
     todayRecord?.check_in,
     todayRecord?.check_out,
+    todayRecord?.site_id,
     startMonitoring,
     stopMonitoring,
   ]);
 
-
-  // ==========================================================
-  // CLOCK OUT MANUEL
-  // ==========================================================
-
-  const handleClockOut =
-    async () => {
-      if (
-        !todayRecord ||
-        todayRecord.check_out
-      ) {
-        return;
-      }
-
-      setSubmitting(true);
-
-      try {
-        const position =
-          await getPosition();
-
-        const now =
-          new Date();
-
-        const clientEventId =
-          createClientEventId();
-
-
-        if (!navigator.onLine) {
-          queueEvent({
-            id:
-              crypto.randomUUID(),
-
-            type:
-              'CLOCK_OUT',
-
-            occurredAt:
-              now.toISOString(),
-
-            latitude:
-              position.coords.latitude,
-
-            longitude:
-              position.coords.longitude,
-
-            accuracyM:
-              position.coords.accuracy,
-
-            clientEventId,
-          });
-
-
-          setTodayRecord({
-            ...todayRecord,
-
-            check_out:
-              now.toISOString(),
-
-            check_out_method:
-              'manual',
-
-            attendance_status:
-              'completed',
-          });
-
-
-          stopMonitoring();
-
-          toast({
-            title:
-              'Départ enregistré',
-            description:
-              'Le départ sera synchronisé dès que la connexion reviendra.',
-          });
-
-          return;
-        }
-
-
-        const {
-          data,
-          error,
-        } = await supabase.rpc(
-          'clock_out',
-          {
-            p_latitude:
-              position.coords.latitude,
-
-            p_longitude:
-              position.coords.longitude,
-
-            p_accuracy_m:
-              position.coords.accuracy,
-
-            p_occurred_at:
-              now.toISOString(),
-
-            p_client_event_id:
-              clientEventId,
-
-            p_device_recorded_at:
-              now.toISOString(),
-          }
-        );
-
-
-        if (error) {
-          throw error;
-        }
-
-
-        setTodayRecord(
-          data as AttendanceRecord
-        );
-
-
-        stopMonitoring();
-
-
-        await loadEvents();
-        await loadHistory();
-
-
-        toast({
-          title:
-            'Départ enregistré',
-          description:
-            'Votre départ a bien été enregistré.',
-        });
-
-      } catch (error) {
-        toast({
-          title:
-            'Impossible d’enregistrer le départ',
-
-          description:
-            error instanceof Error
-              ? error.message
-              : 'Une erreur est survenue.',
-
-          variant:
-            'destructive',
-        });
-
-      } finally {
-        setSubmitting(false);
-      }
-    };
-
-
-  // ==========================================================
-  // EVENTS
-  // ==========================================================
+  /* ==========================================================
+   * LOAD EVENTS WHEN TODAY CHANGES
+   * ======================================================== */
 
   useEffect(() => {
     if (todayRecord) {
       void loadEvents();
+    } else {
+      setEvents([]);
     }
   }, [
     todayRecord,
     loadEvents,
   ]);
 
-
-  // ==========================================================
-  // CLEANUP
-  // ==========================================================
+  /* ==========================================================
+   * CLEANUP
+   * ======================================================== */
 
   useEffect(() => {
     return () => {
@@ -1737,10 +2052,57 @@ export default function Attendance() {
     stopMonitoring,
   ]);
 
+  /* ==========================================================
+   * DISPLAY HELPERS
+   * ======================================================== */
 
-  // ==========================================================
-  // LOADING
-  // ==========================================================
+  const getStatusLabel =
+    (
+      record: AttendanceRecord
+    ): string => {
+      if (record.check_out) {
+        return 'Terminée';
+      }
+
+      if (
+        record.attendance_status ===
+        'missing_departure'
+      ) {
+        return 'Départ manquant';
+      }
+
+      if (
+        record.late_minutes &&
+        record.late_minutes > 0
+      ) {
+        return `Présent — retard ${record.late_minutes} min`;
+      }
+
+      return 'Présent';
+    };
+
+  const getEventLabel =
+    (
+      eventType: EventType
+    ): string => {
+      switch (eventType) {
+        case 'CLOCK_IN':
+          return 'Arrivée';
+
+        case 'SITE_EXIT':
+          return 'Sortie du site';
+
+        case 'SITE_ENTER':
+          return 'Retour sur site';
+
+        case 'CLOCK_OUT':
+          return 'Départ';
+      }
+    };
+
+  /* ==========================================================
+   * LOADING
+   * ======================================================== */
 
   if (loading) {
     return (
@@ -1752,71 +2114,155 @@ export default function Attendance() {
     );
   }
 
-
-  // ==========================================================
-  // RENDER
-  // ==========================================================
+  /* ==========================================================
+   * RENDER
+   * ======================================================== */
 
   return (
     <DashboardLayout>
-
       <div className="animate-fade-in">
+        {/* ====================================================
+         * HEADER
+         * ================================================== */}
 
-        {/* -------------------------------------------------- */}
-        {/* HEADER */}
-        {/* -------------------------------------------------- */}
-
-        <div className="flex items-center justify-between mb-6">
-
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="page-title">
               Pointage
             </h1>
 
-            {site && (
-              <p className="text-sm text-muted-foreground flex items-center gap-1 mt-1">
-                <MapPin className="h-4 w-4" />
+            <div className="flex flex-wrap items-center gap-3 mt-2">
+              {isOnline ? (
+                <span className="flex items-center gap-1 text-sm text-green-600">
+                  <Wifi className="h-4 w-4" />
+                  En ligne
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-sm text-amber-600">
+                  <WifiOff className="h-4 w-4" />
+                  Hors-ligne
+                </span>
+              )}
 
-                {site.site_name}
-              </p>
-            )}
+              {monitoring && (
+                <span className="flex items-center gap-1 text-sm text-primary">
+                  <Radio className="h-4 w-4" />
+                  GPS actif
+                </span>
+              )}
+            </div>
           </div>
 
-
-          <div className="flex items-center gap-3">
-
-            {!isOnline && (
-              <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                <WifiOff className="h-4 w-4" />
-
-                Hors-ligne
-              </span>
-            )}
-
-
-            {monitoring && (
-              <span className="flex items-center gap-1 text-sm text-green-600">
-                <Radio className="h-4 w-4" />
-
-                Surveillance GPS active
-              </span>
-            )}
-
-          </div>
-
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              void refreshAll();
+            }}
+            disabled={loading}
+          >
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Actualiser
+          </Button>
         </div>
 
+        {/* ====================================================
+         * SITE SELECTOR
+         * ================================================== */}
 
-        {/* -------------------------------------------------- */}
-        {/* TODAY */}
-        {/* -------------------------------------------------- */}
+        {!todayRecord && (
+          <Card className="max-w-2xl mb-6">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MapPin className="h-5 w-5 text-primary" />
+                Site de travail
+              </CardTitle>
+            </CardHeader>
+
+            <CardContent>
+              {sites.length === 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5" />
+
+                    <div>
+                      <p className="font-medium text-amber-900">
+                        Aucun site attribué
+                      </p>
+
+                      <p className="text-sm text-amber-800 mt-1">
+                        Aucun site actif ne vous est actuellement attribué.
+                        Contactez votre responsable.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : sites.length === 1 ? (
+                <div className="rounded-lg border p-4">
+                  <div className="flex items-center gap-3">
+                    <MapPin className="h-5 w-5 text-primary" />
+
+                    <div>
+                      <p className="font-medium">
+                        {sites[0].site_name}
+                      </p>
+
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Site automatiquement sélectionné.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Vous êtes affecté à plusieurs sites.
+                    Sélectionnez le site sur lequel vous allez
+                    effectuer votre pointage.
+                  </p>
+
+                  <Select
+                    value={
+                      selectedSiteId ?? undefined
+                    }
+                    onValueChange={
+                      handleSiteChange
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Sélectionner un site" />
+                    </SelectTrigger>
+
+                    <SelectContent>
+                      {sites.map(
+                        (site) => (
+                          <SelectItem
+                            key={
+                              site.site_id
+                            }
+                            value={
+                              site.site_id
+                            }
+                          >
+                            {site.site_name}
+                          </SelectItem>
+                        )
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ====================================================
+         * TODAY
+         * ================================================== */}
 
         <Card className="max-w-2xl mb-8">
-
           <CardHeader>
-
             <CardTitle className="flex items-center gap-2">
-
               <Clock className="h-5 w-5 text-primary" />
 
               Aujourd'hui —{' '}
@@ -1827,50 +2273,38 @@ export default function Attendance() {
                   locale: fr,
                 }
               )}
-
             </CardTitle>
-
           </CardHeader>
 
-
           <CardContent className="space-y-5">
-
-            {/* ---------------------------------------------- */}
-            {/* NO ATTENDANCE */}
-            {/* ---------------------------------------------- */}
+            {/* ------------------------------------------------
+             * NO ATTENDANCE
+             * ---------------------------------------------- */}
 
             {!todayRecord && (
-
               <div className="space-y-4">
+                {selectedSite && (
+                  <div className="rounded-lg border p-4">
+                    <div className="flex items-start gap-3">
+                      <MapPin className="h-5 w-5 text-primary mt-0.5" />
 
-                <div className="rounded-lg border p-4">
+                      <div>
+                        <p className="font-medium">
+                          Site sélectionné
+                        </p>
 
-                  <div className="flex items-start gap-3">
+                        <p className="text-sm text-muted-foreground">
+                          {selectedSite.site_name}
+                        </p>
 
-                    <MapPin className="h-5 w-5 text-primary mt-0.5" />
-
-                    <div>
-
-                      <p className="font-medium">
-                        Site de travail
-                      </p>
-
-                      <p className="text-sm text-muted-foreground">
-                        {site?.site_name ??
-                          'Chargement…'}
-                      </p>
-
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Votre site est déterminé
-                        automatiquement.
-                      </p>
-
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Rayon autorisé :{' '}
+                          {selectedSite.location_radius_m} m
+                        </p>
+                      </div>
                     </div>
-
                   </div>
-
-                </div>
-
+                )}
 
                 <Button
                   onClick={
@@ -1878,11 +2312,11 @@ export default function Attendance() {
                   }
                   disabled={
                     submitting ||
-                    !site
+                    !selectedSite ||
+                    sites.length === 0
                   }
                   className="w-full"
                 >
-
                   {submitting ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   ) : (
@@ -1890,109 +2324,105 @@ export default function Attendance() {
                   )}
 
                   Marquer mon arrivée
-
                 </Button>
-
               </div>
-
             )}
 
-
-            {/* ---------------------------------------------- */}
-            {/* ACTIVE ATTENDANCE */}
-            {/* ---------------------------------------------- */}
+            {/* ------------------------------------------------
+             * ACTIVE ATTENDANCE
+             * ---------------------------------------------- */}
 
             {todayRecord && (
-
               <div className="space-y-4">
+                {/* SITE */}
+
+                <div className="rounded-lg border p-4">
+                  <div className="flex items-start gap-3">
+                    <MapPin className="h-5 w-5 text-primary mt-0.5" />
+
+                    <div>
+                      <p className="font-medium">
+                        Site de présence
+                      </p>
+
+                      <p className="text-sm text-muted-foreground">
+                        {sites.find(
+                          (site) =>
+                            site.site_id ===
+                            todayRecord.site_id
+                        )?.site_name ??
+                          todayRecord.site_id}
+                      </p>
+                    </div>
+                  </div>
+                </div>
 
                 {/* ARRIVAL */}
 
                 <div className="flex justify-between items-center">
-
                   <span className="text-sm text-muted-foreground">
                     Arrivée
                   </span>
 
                   <span className="font-semibold">
-
                     {todayRecord.check_in
                       ? format(
-                        new Date(
-                          todayRecord.check_in
-                        ),
-                        'HH:mm'
-                      )
+                          new Date(
+                            todayRecord.check_in
+                          ),
+                          'HH:mm'
+                        )
                       : '—'}
-
                   </span>
-
                 </div>
-
 
                 {/* RETARD */}
 
                 {Boolean(
                   todayRecord.late_minutes &&
-                  todayRecord.late_minutes > 0
+                    todayRecord.late_minutes >
+                      0
                 ) && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-sm text-amber-800 flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4" />
 
-                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                      Retard de{' '}
+                      {
+                        todayRecord.late_minutes
+                      }{' '}
+                      minute(s)
+                    </p>
+                  </div>
+                )}
 
-                      <p className="text-sm text-amber-800 flex items-center gap-2">
-
-                        <AlertTriangle className="h-4 w-4" />
-
-                        Retard de{' '}
-                        {todayRecord.late_minutes}{' '}
-                        minute(s)
-
-                      </p>
-
-                    </div>
-
-                  )}
-
-
-                {/* MONITORING */}
+                {/* GPS MONITORING */}
 
                 {!todayRecord.check_out &&
                   monitoring && (
-
                     <div className="rounded-md border bg-muted/40 p-3">
-
                       <div className="flex items-center gap-2">
-
                         <Radio className="h-4 w-4 text-primary" />
 
                         <span className="text-sm font-medium">
                           Présence surveillée
                         </span>
-
                       </div>
 
                       <p className="text-xs text-muted-foreground mt-1">
-
-                        Votre position est utilisée
-                        pour détecter les sorties
-                        et retours sur le site.
-
+                        Votre position est utilisée pour
+                        détecter les sorties et retours
+                        du périmètre autorisé.
                       </p>
-
                     </div>
-
                   )}
-
 
                 {/* OUTSIDE */}
 
                 {outsideSince && (
                   <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
-
                     <p className="text-sm text-amber-800">
-
                       Sortie du site détectée à{' '}
-
                       <strong>
                         {format(
                           new Date(
@@ -2001,77 +2431,53 @@ export default function Attendance() {
                           'HH:mm'
                         )}
                       </strong>
-
                     </p>
 
                     <p className="text-xs text-amber-700 mt-1">
-
-                      La sortie sera confirmée
-                      après 6 minutes si vous
-                      restez hors périmètre.
-
+                      La sortie sera confirmée si vous
+                      restez hors périmètre pendant
+                      6 minutes.
                     </p>
-
                   </div>
                 )}
-
 
                 {/* COMPLETED */}
 
                 {todayRecord.check_out && (
-
                   <div className="rounded-md border border-green-200 bg-green-50 p-4">
-
                     <div className="flex items-center gap-2 text-green-700">
-
                       <CheckCircle2 className="h-5 w-5" />
 
                       <span className="font-medium">
                         Journée terminée
                       </span>
-
                     </div>
 
-
                     <p className="text-sm text-green-700 mt-2">
-
                       Départ :{' '}
-
                       <strong>
-
                         {format(
                           new Date(
                             todayRecord.check_out
                           ),
                           'HH:mm'
                         )}
-
                       </strong>
-
                     </p>
-
 
                     {todayRecord.check_out_method ===
                       'gps_auto' && (
-
-                        <p className="text-xs text-green-600 mt-1">
-
-                          Départ détecté
-                          automatiquement par GPS.
-
-                        </p>
-
-                      )}
-
+                      <p className="text-xs text-green-600 mt-1">
+                        Départ détecté automatiquement
+                        par GPS.
+                      </p>
+                    )}
                   </div>
-
                 )}
 
-
-                {/* MANUAL CLOCK OUT */}
+                {/* CLOCK OUT */}
 
                 {!todayRecord.check_out && (
-
                   <Button
                     onClick={
                       handleClockOut
@@ -2082,7 +2488,6 @@ export default function Attendance() {
                     }
                     className="w-full"
                   >
-
                     {submitting ? (
                       <Loader2 className="h-4 w-4 animate-spin mr-2" />
                     ) : (
@@ -2090,99 +2495,64 @@ export default function Attendance() {
                     )}
 
                     Marquer mon départ
-
                   </Button>
-
                 )}
-
               </div>
-
             )}
-
           </CardContent>
-
         </Card>
 
-
-        {/* -------------------------------------------------- */}
-        {/* EVENTS */}
-        {/* -------------------------------------------------- */}
+        {/* ====================================================
+         * EVENTS
+         * ================================================== */}
 
         {events.length > 0 && (
-
           <div className="max-w-2xl mb-8">
-
             <h2 className="font-display text-lg font-semibold mb-4">
-
               Activité de la journée
-
             </h2>
 
-
             <Card>
-
               <CardContent className="pt-6">
-
                 <div className="space-y-4">
-
                   {events.map(
                     (event) => (
-
                       <div
-                        key={event.id}
+                        key={
+                          event.id
+                        }
                         className="flex items-start gap-3"
                       >
-
                         <div className="mt-1">
-
                           {event.event_type ===
                             'CLOCK_IN' && (
-                              <LogIn className="h-4 w-4 text-primary" />
-                            )}
+                            <LogIn className="h-4 w-4 text-primary" />
+                          )}
 
                           {event.event_type ===
                             'SITE_EXIT' && (
-                              <LogOut className="h-4 w-4 text-amber-600" />
-                            )}
+                            <LogOut className="h-4 w-4 text-amber-600" />
+                          )}
 
                           {event.event_type ===
                             'SITE_ENTER' && (
-                              <MapPin className="h-4 w-4 text-green-600" />
-                            )}
+                            <MapPin className="h-4 w-4 text-green-600" />
+                          )}
 
                           {event.event_type ===
                             'CLOCK_OUT' && (
-                              <CheckCircle2 className="h-4 w-4 text-green-600" />
-                            )}
-
+                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                          )}
                         </div>
 
-
                         <div className="flex-1">
-
                           <p className="text-sm font-medium">
-
-                            {event.event_type ===
-                              'CLOCK_IN' &&
-                              'Arrivée'}
-
-                            {event.event_type ===
-                              'SITE_EXIT' &&
-                              'Sortie du site'}
-
-                            {event.event_type ===
-                              'SITE_ENTER' &&
-                              'Retour sur site'}
-
-                            {event.event_type ===
-                              'CLOCK_OUT' &&
-                              'Départ'}
-
+                            {getEventLabel(
+                              event.event_type
+                            )}
                           </p>
 
-
                           <p className="text-xs text-muted-foreground">
-
                             {format(
                               new Date(
                                 event.occurred_at
@@ -2193,67 +2563,47 @@ export default function Attendance() {
                             {' · '}
 
                             {event.event_method ===
-                              'gps_auto'
+                            'gps_auto'
                               ? 'GPS'
                               : 'Manuel'}
-
                           </p>
-
 
                           {event.event_type ===
                             'SITE_EXIT' &&
                             event.is_confirmed && (
-
                               <p className="text-xs text-amber-700 mt-1">
-
-                                Sortie confirmée
-                                après 6 minutes.
-
+                                Sortie confirmée.
                               </p>
-
                             )}
-
                         </div>
-
                       </div>
-
                     )
                   )}
-
                 </div>
-
               </CardContent>
-
             </Card>
-
           </div>
-
         )}
 
-
-        {/* -------------------------------------------------- */}
-        {/* HISTORY */}
-        {/* -------------------------------------------------- */}
+        {/* ====================================================
+         * HISTORY
+         * ================================================== */}
 
         <h2 className="font-display text-lg font-semibold mb-4">
-
           Historique récent
-
         </h2>
 
-
         <Card className="overflow-hidden">
-
           <div className="overflow-x-auto">
-
             <table className="w-full">
-
               <thead>
-
                 <tr className="border-b bg-muted/50">
-
                   <th className="px-4 py-3 text-left">
                     Date
+                  </th>
+
+                  <th className="px-4 py-3 text-left">
+                    Site
                   </th>
 
                   <th className="px-4 py-3 text-left">
@@ -2267,132 +2617,102 @@ export default function Attendance() {
                   <th className="px-4 py-3 text-left">
                     Statut
                   </th>
-
                 </tr>
-
               </thead>
 
-
               <tbody>
-
                 {history.map(
                   (record) => (
-
                     <tr
-                      key={record.id}
+                      key={
+                        record.id
+                      }
                       className="border-b last:border-0"
                     >
-
                       <td className="px-4 py-3 text-sm">
-
                         {format(
                           new Date(
                             record.attendance_date
                           ),
                           'dd/MM/yyyy'
                         )}
-
                       </td>
 
+                      <td className="px-4 py-3 text-sm">
+                        {sites.find(
+                          (site) =>
+                            site.site_id ===
+                            record.site_id
+                        )?.site_name ??
+                          record.site_id}
+                      </td>
 
                       <td className="px-4 py-3 text-sm font-medium">
-
                         {record.check_in
                           ? format(
-                            new Date(
-                              record.check_in
-                            ),
-                            'HH:mm'
-                          )
+                              new Date(
+                                record.check_in
+                              ),
+                              'HH:mm'
+                            )
                           : '—'}
-
                       </td>
 
-
                       <td className="px-4 py-3 text-sm">
-
                         {record.check_out
                           ? format(
-                            new Date(
-                              record.check_out
-                            ),
-                            'HH:mm'
-                          )
+                              new Date(
+                                record.check_out
+                              ),
+                              'HH:mm'
+                            )
                           : '—'}
-
                       </td>
-
 
                       <td className="px-4 py-3 text-sm">
-
-                        {record.attendance_status ===
-                          'completed'
-                          ? 'Terminée'
-                          : record.attendance_status ===
-                            'missing_departure'
-                            ? 'Départ manquant'
-                            : record.late_minutes &&
-                              record.late_minutes >
-                              0
-                              ? `Présent — retard ${record.late_minutes} min`
-                              : 'Présent'}
-
+                        {getStatusLabel(
+                          record
+                        )}
                       </td>
-
                     </tr>
-
                   )
                 )}
 
-
                 {history.length ===
                   0 && (
-
-                    <tr>
-
-                      <td
-                        colSpan={4}
-                        className="px-4 py-8 text-center text-muted-foreground"
-                      >
-
-                        Aucun historique de
-                        pointage.
-
-                      </td>
-
-                    </tr>
-
-                  )}
-
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-4 py-8 text-center text-muted-foreground"
+                    >
+                      Aucun historique de
+                      pointage.
+                    </td>
+                  </tr>
+                )}
               </tbody>
-
             </table>
-
           </div>
-
         </Card>
 
-
-        {/* -------------------------------------------------- */}
-        {/* OFFLINE */}
-        {/* -------------------------------------------------- */}
+        {/* ====================================================
+         * OFFLINE QUEUE
+         * ================================================== */}
 
         {pendingCount > 0 && (
-
-          <div className="mt-4 text-sm text-muted-foreground flex items-center gap-2">
-
+          <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4" />
 
-            {pendingCount}{' '}
-            événement(s) en attente de
-            synchronisation.
-
+            <span>
+              {pendingCount} événement
+              {pendingCount > 1
+                ? 's'
+                : ''}{' '}
+              en attente de synchronisation.
+            </span>
           </div>
-
         )}
-
       </div>
-
     </DashboardLayout>
   );
 }
