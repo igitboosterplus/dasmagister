@@ -128,6 +128,17 @@ interface Site {
   employee_count: number;
 }
 
+interface SiteEmployee {
+  id: string;
+  first_name: string;
+  last_name: string;
+  phone: string | null;
+  is_active: boolean;
+  is_responsible: boolean;
+  position_name: string | null;
+  service_name: string | null;
+}
+
 interface SiteFormValues {
   name: string;
   type: 'magasin' | 'cave';
@@ -304,6 +315,18 @@ export default function ManagerSites() {
   const [selectedSite, setSelectedSite] =
     useState<Site | null>(null);
 
+  const [employees, setEmployees] =
+    useState<SiteEmployee[]>([]);
+
+  const [employeesLoading, setEmployeesLoading] =
+    useState(false);
+
+  const [employeesDialogOpen, setEmployeesDialogOpen] =
+    useState(false);
+
+  const [employeesError, setEmployeesError] =
+    useState<string | null>(null);
+
   const [formValues, setFormValues] =
     useState<SiteFormValues>(EMPTY_FORM);
 
@@ -393,24 +416,41 @@ export default function ManagerSites() {
 
       if (siteIds.length > 0) {
 
-        const { data: empData, error: empError } =
+        const { data: employeeSiteData, error: employeeSiteError } =
           await supabase
-            .from('employees')
-            .select('site_id')
+            .from('employee_sites')
+            .select(`
+              employee_id,
+              site_id,
+              is_active,
+              employees!employee_sites_employee_id_fkey (
+                id,
+                is_active,
+                structure_id
+              )
+            `)
             .in('site_id', siteIds)
             .eq('is_active', true);
 
-        if (!empError && empData) {
+        if (employeeSiteError) {
+          console.error(
+            'Erreur récupération affectations employés:',
+            employeeSiteError
+          );
+        } else {
+          (employeeSiteData || []).forEach((assignment: any) => {
+            const employee = Array.isArray(assignment.employees)
+              ? assignment.employees[0]
+              : assignment.employees;
 
-          empData.forEach((employee: any) => {
+            if (!employee) return;
+            if (!employee.is_active) return;
+            if (employee.structure_id !== profile.structure_id) return;
+            if (!assignment.site_id) return;
 
-            if (!employee.site_id) return;
-
-            employeeCounts[employee.site_id] =
-              (employeeCounts[employee.site_id] || 0) + 1;
-
+            employeeCounts[assignment.site_id] =
+              (employeeCounts[assignment.site_id] || 0) + 1;
           });
-
         }
 
       }
@@ -1079,6 +1119,112 @@ export default function ManagerSites() {
 
     setDialogMode('create');
 
+  };
+
+
+  // ==========================================================
+  // OPEN SITE EMPLOYEES
+  // ==========================================================
+
+  const openEmployees = async (site: Site) => {
+    setSelectedSite(site);
+    setEmployees([]);
+    setEmployeesError(null);
+    setEmployeesDialogOpen(true);
+    setEmployeesLoading(true);
+
+    try {
+      const { data, error } = await supabase
+        .from('employee_sites')
+        .select(`
+          employee_id,
+          site_id,
+          is_active,
+          is_responsible,
+
+          employees!employee_sites_employee_id_fkey (
+            id,
+            first_name,
+            last_name,
+            phone,
+            structure_id,
+            is_active,
+
+            positions (
+              id,
+              name
+            ),
+
+            services (
+              name
+            )
+          )
+        `)
+        .eq('site_id', site.id)
+        .eq('is_active', true);
+
+      if (error) throw error;
+
+      const mappedEmployees: SiteEmployee[] = [];
+
+      (data || []).forEach((assignment: any) => {
+        const employee = Array.isArray(assignment.employees)
+          ? assignment.employees[0]
+          : assignment.employees;
+
+        if (!employee) return;
+        if (!employee.is_active) return;
+        if (employee.structure_id !== profile?.structure_id) return;
+
+        const position = Array.isArray(employee.positions)
+          ? employee.positions[0]
+          : employee.positions;
+
+        const service = Array.isArray(employee.services)
+          ? employee.services[0]
+          : employee.services;
+
+        mappedEmployees.push({
+          id: employee.id,
+          first_name: employee.first_name,
+          last_name: employee.last_name,
+          phone: employee.phone || null,
+          is_active: employee.is_active,
+          is_responsible: assignment.is_responsible ?? false,
+          position_name: position?.name || null,
+          service_name: service?.name || null,
+        });
+      });
+
+      mappedEmployees.sort((a, b) =>
+        `${a.last_name} ${a.first_name}`.localeCompare(
+          `${b.last_name} ${b.first_name}`,
+          'fr'
+        )
+      );
+
+      setEmployees(mappedEmployees);
+    } catch (error: any) {
+      console.error(
+        'Erreur chargement employés du site:',
+        error
+      );
+
+      setEmployeesError(
+        error?.message ||
+        'Impossible de charger les employés de ce site.'
+      );
+    } finally {
+      setEmployeesLoading(false);
+    }
+  };
+
+  const closeEmployeesDialog = () => {
+    if (employeesLoading) return;
+
+    setEmployeesDialogOpen(false);
+    setEmployees([]);
+    setEmployeesError(null);
   };
 
 
@@ -2070,17 +2216,17 @@ export default function ManagerSites() {
                   </div>
 
 
-                  <div className="flex items-center gap-2 text-muted-foreground">
-
-                    <Users className="h-3.5 w-3.5 shrink-0" />
-
-                    <span>
-
-                      {site.employee_count} employé(s)
-
+                  <button
+                    type="button"
+                    onClick={() => openEmployees(site)}
+                    className="flex items-center gap-2 text-muted-foreground hover:text-primary transition-colors text-left w-fit group"
+                  >
+                    <Users className="h-3.5 w-3.5 shrink-0 group-hover:text-primary" />
+                    <span className="group-hover:underline">
+                      {site.employee_count} employé
+                      {site.employee_count > 1 ? 's' : ''}
                     </span>
-
-                  </div>
+                  </button>
 
 
                   <div className="flex items-center gap-2 text-muted-foreground">
@@ -2171,6 +2317,156 @@ export default function ManagerSites() {
           </div>
 
         )}
+
+
+        {/* ====================================================
+            EMPLOYEES OF SITE
+        ==================================================== */}
+
+        <Dialog
+          open={employeesDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeEmployeesDialog();
+            }
+          }}
+        >
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5 text-primary" />
+                Employés du site
+              </DialogTitle>
+              <DialogDescription>
+                {selectedSite?.name
+                  ? `Employés actuellement affectés à ${selectedSite.name}.`
+                  : 'Liste des employés affectés à ce site.'}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="py-2">
+              {employeesLoading && (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((item) => (
+                    <div
+                      key={item}
+                      className="flex items-center gap-3 rounded-lg border p-4"
+                    >
+                      <Skeleton className="h-10 w-10 rounded-full" />
+                      <div className="flex-1 space-y-2">
+                        <Skeleton className="h-4 w-40" />
+                        <Skeleton className="h-3 w-56" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!employeesLoading && employeesError && (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>Erreur</AlertTitle>
+                  <AlertDescription>{employeesError}</AlertDescription>
+                </Alert>
+              )}
+
+              {!employeesLoading &&
+                !employeesError &&
+                employees.length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-12 text-center">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted mb-4">
+                      <Users className="h-7 w-7 text-muted-foreground" />
+                    </div>
+                    <p className="font-medium">Aucun employé</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Aucun employé actif n'est actuellement affecté à ce site.
+                    </p>
+                  </div>
+                )}
+
+              {!employeesLoading &&
+                !employeesError &&
+                employees.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b">
+                      <p className="text-sm text-muted-foreground">
+                        {employees.length} employé
+                        {employees.length > 1 ? 's' : ''}
+                      </p>
+                      <span className="text-xs text-muted-foreground">
+                        Affectation active
+                      </span>
+                    </div>
+
+                    {employees.map((employee) => (
+                      <div
+                        key={employee.id}
+                        className="rounded-lg border p-4 hover:bg-muted/40 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary font-semibold">
+                              {employee.first_name?.charAt(0)}
+                              {employee.last_name?.charAt(0)}
+                            </div>
+
+                            <div className="min-w-0">
+                              <p className="font-semibold truncate">
+                                {employee.first_name}{' '}
+                                {employee.last_name}
+                              </p>
+                              {employee.position_name && (
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {employee.position_name}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {employee.is_responsible && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary px-2 py-1 text-xs font-medium shrink-0">
+                              <ShieldCheck className="h-3 w-3" />
+                              Responsable
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                          <div className="text-muted-foreground">
+                            <span className="text-xs uppercase tracking-wide">
+                              Téléphone
+                            </span>
+                            <p className="text-foreground mt-0.5">
+                              {employee.phone || 'Non renseigné'}
+                            </p>
+                          </div>
+
+                          <div className="text-muted-foreground">
+                            <span className="text-xs uppercase tracking-wide">
+                              Service
+                            </span>
+                            <p className="text-foreground mt-0.5">
+                              {employee.service_name || 'Non renseigné'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={closeEmployeesDialog}
+                disabled={employeesLoading}
+              >
+                Fermer
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
 
         {/* ====================================================

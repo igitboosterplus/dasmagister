@@ -73,16 +73,16 @@ interface AttendanceEvent {
   site_id: string;
 
   event_type:
-    | 'CLOCK_IN'
-    | 'SITE_EXIT'
-    | 'SITE_ENTER'
-    | 'CLOCK_OUT';
+  | 'CLOCK_IN'
+  | 'SITE_EXIT'
+  | 'SITE_ENTER'
+  | 'CLOCK_OUT';
 
   event_method:
-    | 'manual'
-    | 'gps_auto'
-    | 'system'
-    | 'manager';
+  | 'manual'
+  | 'gps_auto'
+  | 'system'
+  | 'manager';
 
   occurred_at: string;
 
@@ -104,10 +104,10 @@ interface PendingEvent {
   id: string;
 
   type:
-    | 'CLOCK_IN'
-    | 'SITE_EXIT'
-    | 'SITE_ENTER'
-    | 'CLOCK_OUT';
+  | 'CLOCK_IN'
+  | 'SITE_EXIT'
+  | 'SITE_ENTER'
+  | 'CLOCK_OUT';
 
   occurredAt: string;
 
@@ -639,14 +639,28 @@ export default function Attendance() {
             );
           }
 
-        } catch (error) {
+        } catch (error: any) {
           console.error(
             'Erreur synchronisation événement:',
             event,
             error
           );
 
-          remaining.push(event);
+          // Conserver l'événement uniquement s'il s'agit d'une erreur réseau ou d'un timeout.
+          const isNetworkError =
+            error?.message === 'Failed to fetch' ||
+            error?.message?.includes('Network') ||
+            error?.message?.includes('network') ||
+            (error?.status && error.status >= 500);
+
+          if (isNetworkError) {
+            remaining.push(event);
+          } else {
+            console.warn(
+              'Evénement écarté suite à une erreur définitive (ex: règle métier, déjà pointé):',
+              error
+            );
+          }
         }
       }
 
@@ -929,26 +943,26 @@ export default function Attendance() {
       const dLat =
         toRad(
           latitude -
-            site.latitude
+          site.latitude
         );
 
       const dLon =
         toRad(
           longitude -
-            site.longitude
+          site.longitude
         );
 
       const a =
         Math.sin(dLat / 2) **
-          2 +
+        2 +
         Math.cos(
           toRad(latitude)
         ) *
-          Math.cos(
-            toRad(site.latitude)
-          ) *
-          Math.sin(dLon / 2) **
-            2;
+        Math.cos(
+          toRad(site.latitude)
+        ) *
+        Math.sin(dLon / 2) **
+        2;
 
       return (
         R *
@@ -1203,7 +1217,7 @@ export default function Attendance() {
           if (
             difference >= 0 &&
             difference <=
-              END_OF_DAY_WINDOW_MINUTES
+            END_OF_DAY_WINDOW_MINUTES
           ) {
             toast({
               title:
@@ -1904,11 +1918,11 @@ export default function Attendance() {
 
                     {todayRecord.check_in
                       ? format(
-                          new Date(
-                            todayRecord.check_in
-                          ),
-                          'HH:mm'
-                        )
+                        new Date(
+                          todayRecord.check_in
+                        ),
+                        'HH:mm'
+                      )
                       : '—'}
 
                   </span>
@@ -1923,21 +1937,21 @@ export default function Attendance() {
                   todayRecord.late_minutes > 0
                 ) && (
 
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
 
-                    <p className="text-sm text-amber-800 flex items-center gap-2">
+                      <p className="text-sm text-amber-800 flex items-center gap-2">
 
-                      <AlertTriangle className="h-4 w-4" />
+                        <AlertTriangle className="h-4 w-4" />
 
-                      Retard de{' '}
-                      {todayRecord.late_minutes}{' '}
-                      minute(s)
+                        Retard de{' '}
+                        {todayRecord.late_minutes}{' '}
+                        minute(s)
 
-                    </p>
+                      </p>
 
-                  </div>
+                    </div>
 
-                )}
+                  )}
 
 
                 {/* MONITORING */}
@@ -2040,14 +2054,14 @@ export default function Attendance() {
                     {todayRecord.check_out_method ===
                       'gps_auto' && (
 
-                      <p className="text-xs text-green-600 mt-1">
+                        <p className="text-xs text-green-600 mt-1">
 
-                        Départ détecté
-                        automatiquement par GPS.
+                          Départ détecté
+                          automatiquement par GPS.
 
-                      </p>
+                        </p>
 
-                    )}
+                      )}
 
                   </div>
 
@@ -2123,23 +2137,23 @@ export default function Attendance() {
 
                           {event.event_type ===
                             'CLOCK_IN' && (
-                            <LogIn className="h-4 w-4 text-primary" />
-                          )}
+                              <LogIn className="h-4 w-4 text-primary" />
+                            )}
 
                           {event.event_type ===
                             'SITE_EXIT' && (
-                            <LogOut className="h-4 w-4 text-amber-600" />
-                          )}
+                              <LogOut className="h-4 w-4 text-amber-600" />
+                            )}
 
                           {event.event_type ===
                             'SITE_ENTER' && (
-                            <MapPin className="h-4 w-4 text-green-600" />
-                          )}
+                              <MapPin className="h-4 w-4 text-green-600" />
+                            )}
 
                           {event.event_type ===
                             'CLOCK_OUT' && (
-                            <CheckCircle2 className="h-4 w-4 text-green-600" />
-                          )}
+                              <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            )}
 
                         </div>
 
@@ -2179,7 +2193,7 @@ export default function Attendance() {
                             {' · '}
 
                             {event.event_method ===
-                            'gps_auto'
+                              'gps_auto'
                               ? 'GPS'
                               : 'Manuel'}
 
@@ -2285,11 +2299,11 @@ export default function Attendance() {
 
                         {record.check_in
                           ? format(
-                              new Date(
-                                record.check_in
-                              ),
-                              'HH:mm'
-                            )
+                            new Date(
+                              record.check_in
+                            ),
+                            'HH:mm'
+                          )
                           : '—'}
 
                       </td>
@@ -2299,11 +2313,11 @@ export default function Attendance() {
 
                         {record.check_out
                           ? format(
-                              new Date(
-                                record.check_out
-                              ),
-                              'HH:mm'
-                            )
+                            new Date(
+                              record.check_out
+                            ),
+                            'HH:mm'
+                          )
                           : '—'}
 
                       </td>
@@ -2316,12 +2330,12 @@ export default function Attendance() {
                           ? 'Terminée'
                           : record.attendance_status ===
                             'missing_departure'
-                          ? 'Départ manquant'
-                          : record.late_minutes &&
-                            record.late_minutes >
+                            ? 'Départ manquant'
+                            : record.late_minutes &&
+                              record.late_minutes >
                               0
-                          ? `Présent — retard ${record.late_minutes} min`
-                          : 'Présent'}
+                              ? `Présent — retard ${record.late_minutes} min`
+                              : 'Présent'}
 
                       </td>
 
@@ -2334,21 +2348,21 @@ export default function Attendance() {
                 {history.length ===
                   0 && (
 
-                  <tr>
+                    <tr>
 
-                    <td
-                      colSpan={4}
-                      className="px-4 py-8 text-center text-muted-foreground"
-                    >
+                      <td
+                        colSpan={4}
+                        className="px-4 py-8 text-center text-muted-foreground"
+                      >
 
-                      Aucun historique de
-                      pointage.
+                        Aucun historique de
+                        pointage.
 
-                    </td>
+                      </td>
 
-                  </tr>
+                    </tr>
 
-                )}
+                  )}
 
               </tbody>
 
