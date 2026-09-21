@@ -3,9 +3,12 @@ import { useAuth } from '@/hooks/useAuth';
 import AppSidebar from './AppSidebar';
 import { Loader2, Menu } from 'lucide-react';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import InstallButton from '@/components/btndownload';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
+
+  <InstallButton/>
 
   if (loading) {
     return (
