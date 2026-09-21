@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 
 import guimsLogo from '@/assets/guims-logo.png';
+import InstallButton from '@/components/btndownload';
 
 
 // ============================================================
@@ -336,6 +337,7 @@ export default function Login() {
 
     }
   };
+  
 
 
   // ==========================================================
@@ -765,7 +767,6 @@ export default function Login() {
       }}
     >
 
-
       {/* ====================================================
           BRANDING
       ==================================================== */}
@@ -799,6 +800,7 @@ export default function Login() {
           mb-4
         ">
           Das-Sarl / MAGISTERE
+          <InstallButton/>
         </h1>
 
 
