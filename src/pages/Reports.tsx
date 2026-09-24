@@ -42,9 +42,7 @@ import {
 } from '@/components/ui/card';
 
 import { Input } from '@/components/ui/input';
-
 import { Label } from '@/components/ui/label';
-
 import { Textarea } from '@/components/ui/textarea';
 
 import {
@@ -57,7 +55,12 @@ import {
 
 import { Badge } from '@/components/ui/badge';
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
 
@@ -124,7 +127,7 @@ interface Report {
 
   received_at: string | null;
 
-  employees?: ReportEmployee | null;
+  employees: ReportEmployee | null;
   report_types: ReportTypeRelation | null;
 
   attachments: ReportAttachment[];
@@ -218,7 +221,7 @@ const getFileIcon = (attachment: ReportAttachment) => {
 };
 
 const formatFileSize = (bytes: number | null) => {
-  if (!bytes) {
+  if (bytes === null || bytes === undefined) {
     return 'Taille inconnue';
   }
 
@@ -230,7 +233,11 @@ const formatFileSize = (bytes: number | null) => {
     return `${(bytes / 1024).toFixed(1)} Ko`;
   }
 
-  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+  }
+
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} Go`;
 };
 
 
@@ -241,31 +248,31 @@ const formatFileSize = (bytes: number | null) => {
 export default function Reports() {
   const { profile, role } = useAuth();
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // DATA
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [reports, setReports] = useState<Report[]>([]);
   const [reportTypes, setReportTypes] = useState<ReportType[]>([]);
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // LOADING
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // MANAGER
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [structureManager, setStructureManager] =
     useState<StructureManager | null>(null);
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // NEW REPORT
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [newReport, setNewReport] = useState<NewReport>({
     typeId: '',
@@ -276,18 +283,18 @@ export default function Reports() {
 
   const [isNewReportOpen, setIsNewReportOpen] = useState(false);
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // DETAILS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [selectedReport, setSelectedReport] =
     useState<Report | null>(null);
 
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PREVIEW
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [previewAttachment, setPreviewAttachment] =
     useState<ReportAttachment | null>(null);
@@ -299,9 +306,9 @@ export default function Reports() {
 
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // FILTERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [activeTab, setActiveTab] =
     useState<ReportTab>('received');
@@ -314,9 +321,9 @@ export default function Reports() {
   const [typeFilter, setTypeFilter] =
     useState<string>('all');
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // FORWARD
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const [forwardingReportId, setForwardingReportId] =
     useState<string | null>(null);
@@ -327,21 +334,29 @@ export default function Reports() {
   // ==========================================================
 
   const loadReportTypes = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('report_types')
-      .select('id, name')
-      .order('name');
+    try {
+      const { data, error } = await supabase
+        .from('report_types')
+        .select('id, name')
+        .order('name', {
+          ascending: true,
+        });
 
-    if (error) {
+      if (error) {
+        throw error;
+      }
+
+      setReportTypes(
+        (data ?? []) as ReportType[],
+      );
+    } catch (error) {
       console.error(
         'Erreur chargement types de rapports:',
         error,
       );
 
-      return;
+      setReportTypes([]);
     }
-
-    setReportTypes(data ?? []);
   }, []);
 
 
@@ -349,60 +364,254 @@ export default function Reports() {
   // LOAD REPORTS
   // ==========================================================
 
- const loadReports = useCallback(async () => {
-  const { data, error } = await supabase
-    .from('reports')
-    .select(`
-      id,
-      employee_id,
-      report_type_id,
-      title,
-      description,
-      file_url,
-      submitted_at,
-      validated_at,
-      recipient_id,
-      forwarded_by,
-      forwarded_at,
-      structure_id,
-      site_id,
-      author_employee_id,
-      recipient_employee_id,
-      status,
-      received_at,
+  const loadReports = useCallback(async () => {
+    try {
+      // --------------------------------------------------------
+      // 1. RÉCUPÉRER LES RAPPORTS
+      // --------------------------------------------------------
 
-      report_types (
-        name
-      ),
+      const { data: reportData, error: reportError } =
+        await supabase
+          .from('reports')
+          .select(`
+            id,
+            employee_id,
+            report_type_id,
+            title,
+            description,
+            file_url,
+            submitted_at,
+            validated_at,
+            recipient_id,
+            forwarded_by,
+            forwarded_at,
+            structure_id,
+            site_id,
+            author_employee_id,
+            recipient_employee_id,
+            status,
+            received_at,
 
-      attachments:report_attachments (
-        id,
-        report_id,
-        file_name,
-        file_path,
-        file_url,
-        mime_type,
-        file_size,
-        created_at
-      )
-    `)
-    .order('submitted_at', {
-      ascending: false,
-    });
+            report_types (
+              name
+            ),
 
-  if (error) {
-    console.error(
-      'Erreur chargement rapports:',
-      error
-    );
+            attachments:report_attachments (
+              id,
+              report_id,
+              file_name,
+              file_path,
+              file_url,
+              mime_type,
+              file_size,
+              created_at
+            )
+          `)
+          .order('submitted_at', {
+            ascending: false,
+          });
 
-    return;
-  }
+      if (reportError) {
+        throw reportError;
+      }
 
-  setReports(
-    (data ?? []) as unknown as Report[]
-  );
-}, []);
+      const rawReports = reportData ?? [];
+
+      // --------------------------------------------------------
+      // Aucun rapport
+      // --------------------------------------------------------
+
+      if (rawReports.length === 0) {
+        setReports([]);
+        return;
+      }
+
+      // --------------------------------------------------------
+      // 2. RÉCUPÉRER LES IDS DES EMPLOYÉS
+      // --------------------------------------------------------
+
+      const employeeIds = [
+        ...new Set(
+          rawReports
+            .flatMap((report) => [
+              report.employee_id,
+              report.author_employee_id,
+            ])
+            .filter(
+              (id): id is string =>
+                typeof id === 'string' &&
+                id.trim().length > 0,
+            ),
+        ),
+      ];
+
+      // --------------------------------------------------------
+      // 3. RÉCUPÉRER LES EMPLOYÉS
+      // --------------------------------------------------------
+
+      let employees: ReportEmployee[] = [];
+
+      if (employeeIds.length > 0) {
+        const {
+          data: employeeData,
+          error: employeeError,
+        } = await supabase
+          .from('employees')
+          .select(`
+            id,
+            first_name,
+            last_name,
+            structure_id
+          `)
+          .in('id', employeeIds);
+
+        if (employeeError) {
+          throw new Error(
+            `Impossible de récupérer les employés des rapports : ${employeeError.message}`,
+          );
+        }
+
+        employees =
+          (employeeData ?? []) as ReportEmployee[];
+      }
+
+      // --------------------------------------------------------
+      // 4. MAP DES EMPLOYÉS
+      // --------------------------------------------------------
+
+      const employeeMap = new Map<
+        string,
+        ReportEmployee
+      >();
+
+      for (const employee of employees) {
+        employeeMap.set(
+          employee.id,
+          employee,
+        );
+      }
+
+      // --------------------------------------------------------
+      // 5. NORMALISATION
+      // --------------------------------------------------------
+
+      const normalizedReports: Report[] =
+        rawReports.map((report) => {
+          /*
+           * IMPORTANT :
+           *
+           * employee_id est la référence principale
+           * de l'auteur.
+           *
+           * author_employee_id est utilisé comme
+           * fallback pour les anciens rapports.
+           */
+
+          const employee =
+            employeeMap.get(
+              report.employee_id,
+            ) ??
+            (report.author_employee_id
+              ? employeeMap.get(
+                  report.author_employee_id,
+                )
+              : undefined);
+
+          return {
+            id: report.id,
+
+            employee_id: report.employee_id,
+
+            report_type_id:
+              report.report_type_id,
+
+            title: report.title,
+
+            description:
+              report.description ?? null,
+
+            file_url:
+              report.file_url ?? null,
+
+            submitted_at:
+              report.submitted_at,
+
+            validated_at:
+              report.validated_at ?? null,
+
+            recipient_id:
+              report.recipient_id ?? null,
+
+            forwarded_by:
+              report.forwarded_by ?? null,
+
+            forwarded_at:
+              report.forwarded_at ?? null,
+
+            structure_id:
+              report.structure_id ?? null,
+
+            site_id:
+              report.site_id ?? null,
+
+            author_employee_id:
+              report.author_employee_id ?? null,
+
+            recipient_employee_id:
+              report.recipient_employee_id ?? null,
+
+            status:
+              report.status,
+
+            received_at:
+              report.received_at ?? null,
+
+            employees:
+              employee ?? null,
+
+            report_types:
+              Array.isArray(report.report_types)
+                ? report.report_types[0] ?? null
+                : report.report_types ?? null,
+
+            attachments:
+              Array.isArray(report.attachments)
+                ? (report.attachments as ReportAttachment[])
+                : [],
+          };
+        });
+
+      // --------------------------------------------------------
+      // 6. DIAGNOSTIC
+      // --------------------------------------------------------
+
+      const missingEmployeeIds =
+        employeeIds.filter(
+          (id) => !employeeMap.has(id),
+        );
+
+      if (missingEmployeeIds.length > 0) {
+        console.warn(
+          '[REPORTS] Employés non accessibles :',
+          missingEmployeeIds,
+        );
+      }
+
+      // --------------------------------------------------------
+      // 7. UPDATE STATE
+      // --------------------------------------------------------
+
+      setReports(normalizedReports);
+
+    } catch (error) {
+      console.error(
+        'Erreur chargement rapports:',
+        error,
+      );
+
+      setReports([]);
+    }
+  }, []);
 
 
   // ==========================================================
@@ -414,24 +623,29 @@ export default function Reports() {
       return;
     }
 
-    const { data, error } = await supabase.rpc(
-      'get_current_structure_manager',
-    );
+    try {
+      const { data, error } =
+        await supabase.rpc(
+          'get_current_structure_manager',
+        );
 
-    if (error) {
+      if (error) {
+        throw error;
+      }
+
+      setStructureManager(
+        (data?.[0] ?? null) as
+          | StructureManager
+          | null,
+      );
+    } catch (error) {
       console.error(
         'Erreur récupération manager:',
         error,
       );
 
       setStructureManager(null);
-
-      return;
     }
-
-    setStructureManager(
-      (data?.[0] ?? null) as StructureManager | null,
-    );
   }, [role]);
 
 
@@ -446,6 +660,7 @@ export default function Reports() {
       await Promise.all([
         loadReportTypes(),
         loadReports(),
+
         role === 'employee'
           ? loadStructureManager()
           : Promise.resolve(),
@@ -467,7 +682,7 @@ export default function Reports() {
 
 
   // ==========================================================
-  // CURRENT REPORTS
+  // EMPLOYEE REPORTS
   // ==========================================================
 
   const employeeReports = useMemo(() => {
@@ -483,6 +698,10 @@ export default function Reports() {
   }, [reports, profile]);
 
 
+  // ==========================================================
+  // MANAGER RECEIVED REPORTS
+  // ==========================================================
+
   const managerReceivedReports = useMemo(() => {
     if (!profile) {
       return [];
@@ -496,6 +715,10 @@ export default function Reports() {
   }, [reports, profile]);
 
 
+  // ==========================================================
+  // MANAGER OWN REPORTS
+  // ==========================================================
+
   const managerOwnReports = useMemo(() => {
     if (!profile) {
       return [];
@@ -508,6 +731,10 @@ export default function Reports() {
     );
   }, [reports, profile]);
 
+
+  // ==========================================================
+  // ADMIN RECEIVED REPORTS
+  // ==========================================================
 
   const adminReceivedReports = useMemo(() => {
     if (!profile) {
@@ -523,7 +750,7 @@ export default function Reports() {
 
 
   // ==========================================================
-  // ROLE LIST
+  // REPORTS BY ROLE
   // ==========================================================
 
   const roleReports = useMemo(() => {
@@ -588,17 +815,27 @@ export default function Reports() {
       // ------------------------------------------------------
 
       if (normalizedSearch) {
+        const employeeName =
+          report.employees
+            ? `${report.employees.first_name} ${report.employees.last_name}`
+            : '';
+
         const searchable = [
           report.title,
           report.description ?? '',
           report.report_types?.name ?? '',
+          employeeName,
           report.employees?.first_name ?? '',
           report.employees?.last_name ?? '',
         ]
           .join(' ')
           .toLowerCase();
 
-        if (!searchable.includes(normalizedSearch)) {
+        if (
+          !searchable.includes(
+            normalizedSearch,
+          )
+        ) {
           return false;
         }
       }
@@ -634,14 +871,18 @@ export default function Reports() {
 
 
   // ==========================================================
-  // REMOVE SELECTED FILE
+  // REMOVE FILE
   // ==========================================================
 
-  const removeSelectedFile = (index: number) => {
+  const removeSelectedFile = (
+    index: number,
+  ) => {
     setNewReport((previous) => ({
       ...previous,
+
       files: previous.files.filter(
-        (_, fileIndex) => fileIndex !== index,
+        (_, fileIndex) =>
+          fileIndex !== index,
       ),
     }));
   };
@@ -667,6 +908,10 @@ export default function Reports() {
 
   const handleSubmit = async () => {
     if (!profile) {
+      alert(
+        'Utilisateur non authentifié.',
+      );
+
       return;
     }
 
@@ -713,14 +958,18 @@ export default function Reports() {
 
       let recipientId: string | null = null;
 
-      // EMPLOYÉ -> MANAGER DE SA STRUCTURE
+      // ------------------------------------------------------
+      // EMPLOYEE -> MANAGER
+      // ------------------------------------------------------
+
       if (role === 'employee') {
         let manager = structureManager;
 
         if (!manager) {
-          const { data, error } = await supabase.rpc(
-            'get_current_structure_manager',
-          );
+          const { data, error } =
+            await supabase.rpc(
+              'get_current_structure_manager',
+            );
 
           if (error) {
             throw new Error(
@@ -729,7 +978,9 @@ export default function Reports() {
           }
 
           manager =
-            (data?.[0] ?? null) as StructureManager | null;
+            (data?.[0] ?? null) as
+              | StructureManager
+              | null;
         }
 
         if (!manager) {
@@ -741,10 +992,15 @@ export default function Reports() {
         recipientId = manager.id;
       }
 
+      // ------------------------------------------------------
       // MANAGER -> ADMIN
+      // ------------------------------------------------------
+
       if (role === 'manager') {
         const { data, error } =
-          await supabase.rpc('get_current_admin');
+          await supabase.rpc(
+            'get_current_admin',
+          );
 
         if (error) {
           throw new Error(
@@ -753,7 +1009,9 @@ export default function Reports() {
         }
 
         const admin =
-          (data?.[0] ?? null) as StructureManager | null;
+          (data?.[0] ?? null) as
+            | StructureManager
+            | null;
 
         if (!admin) {
           throw new Error(
@@ -770,40 +1028,49 @@ export default function Reports() {
         );
       }
 
-
       // ------------------------------------------------------
       // CRÉATION DU RAPPORT
       // ------------------------------------------------------
 
-      const { data: createdReport, error: reportError } =
-        await supabase
-          .from('reports')
-          .insert({
-            employee_id: profile.id,
+      const {
+        data: createdReport,
+        error: reportError,
+      } = await supabase
+        .from('reports')
+        .insert({
+          employee_id: profile.id,
 
-            author_employee_id: profile.id,
+          author_employee_id:
+            profile.id,
 
-            structure_id: profile.structure_id,
+          structure_id:
+            profile.structure_id,
 
-            report_type_id: newReport.typeId,
+          report_type_id:
+            newReport.typeId,
 
-            title: newReport.title.trim(),
+          title:
+            newReport.title.trim(),
 
-            description:
-              newReport.description.trim() || null,
+          description:
+            newReport.description.trim() ||
+            null,
 
-            file_url: null,
+          file_url: null,
 
-            recipient_employee_id: recipientId,
+          recipient_employee_id:
+            recipientId,
 
-            recipient_id: recipientId,
+          recipient_id:
+            recipientId,
 
-            status: 'submitted',
+          status: 'submitted',
 
-            submitted_at: new Date().toISOString(),
-          })
-          .select('id')
-          .single();
+          submitted_at:
+            new Date().toISOString(),
+        })
+        .select('id')
+        .single();
 
       if (reportError) {
         throw reportError;
@@ -815,7 +1082,6 @@ export default function Reports() {
         );
       }
 
-
       // ------------------------------------------------------
       // UPLOAD DES FICHIERS
       // ------------------------------------------------------
@@ -824,9 +1090,9 @@ export default function Reports() {
         const extension =
           file.name.includes('.')
             ? file.name
-              .split('.')
-              .pop()
-              ?.toLowerCase() ?? 'file'
+                .split('.')
+                .pop()
+                ?.toLowerCase() ?? 'file'
             : 'file';
 
         const uniqueName =
@@ -835,20 +1101,21 @@ export default function Reports() {
         const filePath =
           `${profile.structure_id}/${profile.id}/${createdReport.id}/${uniqueName}`;
 
-
-        const { error: uploadError } =
-          await supabase.storage
-            .from(STORAGE_BUCKET)
-            .upload(
-              filePath,
-              file,
-              {
-                cacheControl: '3600',
-                upsert: false,
-                contentType:
-                  file.type || 'application/octet-stream',
-              },
-            );
+        const {
+          error: uploadError,
+        } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .upload(
+            filePath,
+            file,
+            {
+              cacheControl: '3600',
+              upsert: false,
+              contentType:
+                file.type ||
+                'application/octet-stream',
+            },
+          );
 
         if (uploadError) {
           throw uploadError;
@@ -856,38 +1123,41 @@ export default function Reports() {
 
         uploadedPaths.push(filePath);
 
-
         // ----------------------------------------------------
-        // ENREGISTREMENT DE LA PIÈCE JOINTE
+        // INSERT ATTACHMENT
         // ----------------------------------------------------
 
-        const { error: attachmentError } =
-          await supabase
-            .from('report_attachments')
-            .insert({
-              report_id: createdReport.id,
+        const {
+          error: attachmentError,
+        } = await supabase
+          .from('report_attachments')
+          .insert({
+            report_id:
+              createdReport.id,
 
-              file_name: file.name,
+            file_name:
+              file.name,
 
-              file_path: filePath,
+            file_path:
+              filePath,
 
-              file_url: null,
+            file_url: null,
 
-              mime_type:
-                file.type ||
-                'application/octet-stream',
+            mime_type:
+              file.type ||
+              'application/octet-stream',
 
-              file_size: file.size,
-            });
+            file_size:
+              file.size,
+          });
 
         if (attachmentError) {
           throw attachmentError;
         }
       }
 
-
       // ------------------------------------------------------
-      // SUCCÈS
+      // SUCCESS
       // ------------------------------------------------------
 
       resetNewReport();
@@ -896,7 +1166,9 @@ export default function Reports() {
 
       await loadReports();
 
-      alert('Rapport envoyé avec succès.');
+      alert(
+        'Rapport envoyé avec succès.',
+      );
 
     } catch (error: any) {
       console.error(
@@ -904,16 +1176,16 @@ export default function Reports() {
         error,
       );
 
-
       // ------------------------------------------------------
-      // NETTOYAGE STORAGE
+      // CLEAN STORAGE
       // ------------------------------------------------------
 
       if (uploadedPaths.length > 0) {
-        const { error: removeError } =
-          await supabase.storage
-            .from(STORAGE_BUCKET)
-            .remove(uploadedPaths);
+        const {
+          error: removeError,
+        } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(uploadedPaths);
 
         if (removeError) {
           console.error(
@@ -923,10 +1195,9 @@ export default function Reports() {
         }
       }
 
-
       alert(
         error?.message ||
-        'Une erreur est survenue lors de l’envoi du rapport.',
+          'Une erreur est survenue lors de l’envoi du rapport.',
       );
     } finally {
       setSubmitting(false);
@@ -935,19 +1206,21 @@ export default function Reports() {
 
 
   // ==========================================================
-  // GET SIGNED URL
+  // SIGNED URL
   // ==========================================================
 
   const getSignedUrl = async (
     filePath: string,
   ) => {
-    const { data, error } =
-      await supabase.storage
-        .from(STORAGE_BUCKET)
-        .createSignedUrl(
-          filePath,
-          60 * 10,
-        );
+    const {
+      data,
+      error,
+    } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .createSignedUrl(
+        filePath,
+        60 * 10,
+      );
 
     if (error) {
       throw error;
@@ -971,19 +1244,24 @@ export default function Reports() {
     attachment: ReportAttachment,
   ) => {
     try {
-      setPreviewAttachment(attachment);
+      setPreviewAttachment(
+        attachment,
+      );
 
       if (isImageFile(attachment)) {
         setPreviewType('image');
-      } else if (isPdfFile(attachment)) {
+      } else if (
+        isPdfFile(attachment)
+      ) {
         setPreviewType('pdf');
       } else {
         setPreviewType('unsupported');
       }
 
-      const url = await getSignedUrl(
-        attachment.file_path,
-      );
+      const url =
+        await getSignedUrl(
+          attachment.file_path,
+        );
 
       setPreviewUrl(url);
 
@@ -997,27 +1275,31 @@ export default function Reports() {
 
       alert(
         error?.message ||
-        'Impossible d’ouvrir le document.',
+          'Impossible d’ouvrir le document.',
       );
     }
   };
 
 
   // ==========================================================
-  // DOWNLOAD FILE
+  // DOWNLOAD
   // ==========================================================
 
   const handleDownload = async (
     attachment: ReportAttachment,
   ) => {
     try {
-      setDownloading(attachment.id);
-
-      const url = await getSignedUrl(
-        attachment.file_path,
+      setDownloading(
+        attachment.id,
       );
 
-      const response = await fetch(url);
+      const url =
+        await getSignedUrl(
+          attachment.file_path,
+        );
+
+      const response =
+        await fetch(url);
 
       if (!response.ok) {
         throw new Error(
@@ -1025,25 +1307,33 @@ export default function Reports() {
         );
       }
 
-      const blob = await response.blob();
+      const blob =
+        await response.blob();
 
       const blobUrl =
-        window.URL.createObjectURL(blob);
+        window.URL.createObjectURL(
+          blob,
+        );
 
       const link =
         document.createElement('a');
 
       link.href = blobUrl;
 
-      link.download = attachment.file_name;
+      link.download =
+        attachment.file_name;
 
-      document.body.appendChild(link);
+      document.body.appendChild(
+        link,
+      );
 
       link.click();
 
       link.remove();
 
-      window.URL.revokeObjectURL(blobUrl);
+      window.URL.revokeObjectURL(
+        blobUrl,
+      );
 
     } catch (error: any) {
       console.error(
@@ -1053,7 +1343,7 @@ export default function Reports() {
 
       alert(
         error?.message ||
-        'Impossible de télécharger le document.',
+          'Impossible de télécharger le document.',
       );
     } finally {
       setDownloading(null);
@@ -1069,9 +1359,10 @@ export default function Reports() {
     attachment: ReportAttachment,
   ) => {
     try {
-      const url = await getSignedUrl(
-        attachment.file_path,
-      );
+      const url =
+        await getSignedUrl(
+          attachment.file_path,
+        );
 
       window.open(
         url,
@@ -1086,7 +1377,7 @@ export default function Reports() {
 
       alert(
         error?.message ||
-        'Impossible d’ouvrir le fichier.',
+          'Impossible d’ouvrir le fichier.',
       );
     }
   };
@@ -1103,24 +1394,34 @@ export default function Reports() {
       return;
     }
 
-    setForwardingReportId(report.id);
+    if (!profile) {
+      return;
+    }
+
+    setForwardingReportId(
+      report.id,
+    );
 
     try {
       // ------------------------------------------------------
-      // RÉCUPÉRATION DYNAMIQUE DE L'ADMIN
+      // RÉCUPÉRER ADMIN
       // ------------------------------------------------------
 
-      const { data, error } =
-        await supabase.rpc(
-          'get_current_admin',
-        );
+      const {
+        data,
+        error,
+      } = await supabase.rpc(
+        'get_current_admin',
+      );
 
       if (error) {
         throw error;
       }
 
       const admin =
-        (data?.[0] ?? null) as StructureManager | null;
+        (data?.[0] ?? null) as
+          | StructureManager
+          | null;
 
       if (!admin) {
         throw new Error(
@@ -1128,35 +1429,41 @@ export default function Reports() {
         );
       }
 
-
       // ------------------------------------------------------
       // TRANSMISSION
       // ------------------------------------------------------
 
-      const { error: updateError } =
-        await supabase
-          .from('reports')
-          .update({
-            recipient_employee_id: admin.id,
+      const {
+        error: updateError,
+      } = await supabase
+        .from('reports')
+        .update({
+          recipient_employee_id:
+            admin.id,
 
-            recipient_id: admin.id,
+          recipient_id:
+            admin.id,
 
-            status: 'forwarded',
+          status:
+            'forwarded',
 
-            forwarded_by: profile?.id ?? null,
+          forwarded_by:
+            profile.id,
 
-            forwarded_at:
-              new Date().toISOString(),
+          forwarded_at:
+            new Date().toISOString(),
 
-            received_at: null,
-          })
-          .eq('id', report.id);
-
+          received_at:
+            null,
+        })
+        .eq(
+          'id',
+          report.id,
+        );
 
       if (updateError) {
         throw updateError;
       }
-
 
       await loadReports();
 
@@ -1172,10 +1479,12 @@ export default function Reports() {
 
       alert(
         error?.message ||
-        'Impossible de transmettre le rapport.',
+          'Impossible de transmettre le rapport.',
       );
     } finally {
-      setForwardingReportId(null);
+      setForwardingReportId(
+        null,
+      );
     }
   };
 
@@ -1184,9 +1493,16 @@ export default function Reports() {
   // OPEN DETAILS
   // ==========================================================
 
-  const openDetails = (report: Report) => {
-    setSelectedReport(report);
-    setIsDetailsOpen(true);
+  const openDetails = (
+    report: Report,
+  ) => {
+    setSelectedReport(
+      report,
+    );
+
+    setIsDetailsOpen(
+      true,
+    );
   };
 
 
@@ -1208,7 +1524,10 @@ export default function Reports() {
   const renderAttachments = (
     attachments: ReportAttachment[],
   ) => {
-    if (!attachments || attachments.length === 0) {
+    if (
+      !attachments ||
+      attachments.length === 0
+    ) {
       return (
         <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
           Aucune pièce jointe.
@@ -1218,41 +1537,56 @@ export default function Reports() {
 
     return (
       <div className="space-y-2">
-        {attachments.map((attachment) => {
-          const Icon =
-            getFileIcon(attachment);
+        {attachments.map(
+          (attachment) => {
+            const Icon =
+              getFileIcon(
+                attachment,
+              );
 
-          return (
-            <div
-              key={attachment.id}
-              className="flex items-center justify-between gap-3 rounded-lg border p-3"
-            >
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="rounded-lg bg-muted p-2">
-                  <Icon className="h-5 w-5" />
+            return (
+              <div
+                key={
+                  attachment.id
+                }
+                className="flex items-center justify-between gap-3 rounded-lg border p-3"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="rounded-lg bg-muted p-2">
+                    <Icon className="h-5 w-5" />
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {
+                        attachment.file_name
+                      }
+                    </p>
+
+                    <p className="text-xs text-muted-foreground">
+                      {formatFileSize(
+                        attachment.file_size,
+                      )}
+                    </p>
+                  </div>
                 </div>
 
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">
-                    {attachment.file_name}
-                  </p>
-
-                  <p className="text-xs text-muted-foreground">
-                    {formatFileSize(
-                      attachment.file_size,
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex shrink-0 gap-2">
-                {(isImageFile(attachment) ||
-                  isPdfFile(attachment)) && (
+                <div className="flex shrink-0 gap-2">
+                  {(
+                    isImageFile(
+                      attachment,
+                    ) ||
+                    isPdfFile(
+                      attachment,
+                    )
+                  ) && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() =>
-                        handlePreview(attachment)
+                        handlePreview(
+                          attachment,
+                        )
                       }
                     >
                       <Eye className="mr-2 h-4 w-4" />
@@ -1260,29 +1594,33 @@ export default function Reports() {
                     </Button>
                   )}
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    handleDownload(attachment)
-                  }
-                  disabled={
-                    downloading === attachment.id
-                  }
-                >
-                  {downloading ===
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      handleDownload(
+                        attachment,
+                      )
+                    }
+                    disabled={
+                      downloading ===
+                      attachment.id
+                    }
+                  >
+                    {downloading ===
                     attachment.id ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Download className="mr-2 h-4 w-4" />
-                  )}
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Download className="mr-2 h-4 w-4" />
+                    )}
 
-                  Télécharger
-                </Button>
+                    Télécharger
+                  </Button>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          },
+        )}
       </div>
     );
   };
@@ -1300,8 +1638,18 @@ export default function Reports() {
 
     const employeeName =
       report.employees
-        ? `${report.employees.first_name} ${report.employees.last_name}`
-        : 'Employé inconnu';
+        ? [
+            report.employees.first_name,
+            report.employees.last_name,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .trim()
+        : '';
+
+    const displayEmployeeName =
+      employeeName ||
+      'Employé inconnu';
 
     return (
       <Card
@@ -1316,7 +1664,8 @@ export default function Reports() {
               </CardTitle>
 
               <CardDescription className="mt-1">
-                {report.report_types?.name ??
+                {report.report_types
+                  ?.name ??
                   'Type inconnu'}
               </CardDescription>
             </div>
@@ -1334,12 +1683,18 @@ export default function Reports() {
         </CardHeader>
 
         <CardContent className="space-y-4">
+          {/* =================================================
+              AUTEUR
+          ================================================= */}
+
           {role !== 'employee' && (
             <div className="text-sm">
               <span className="font-medium">
                 Auteur :
               </span>{' '}
-              {employeeName}
+              <span>
+                {displayEmployeeName}
+              </span>
             </div>
           )}
 
@@ -1367,11 +1722,13 @@ export default function Reports() {
 
               {attachments.length}{' '}
               pièce
-              {attachments.length > 1
+              {attachments.length >
+              1
                 ? 's'
                 : ''}{' '}
               jointe
-              {attachments.length > 1
+              {attachments.length >
+              1
                 ? 's'
                 : ''}
             </span>
@@ -1382,7 +1739,9 @@ export default function Reports() {
               variant="outline"
               size="sm"
               onClick={() =>
-                openDetails(report)
+                openDetails(
+                  report,
+                )
               }
             >
               <Eye className="mr-2 h-4 w-4" />
@@ -1390,8 +1749,10 @@ export default function Reports() {
             </Button>
 
             {role === 'manager' &&
-              activeTab === 'received' &&
-              report.status === 'submitted' && (
+              activeTab ===
+                'received' &&
+              report.status ===
+                'submitted' && (
                 <Button
                   size="sm"
                   onClick={() =>
@@ -1405,13 +1766,14 @@ export default function Reports() {
                   }
                 >
                   {forwardingReportId ===
-                    report.id ? (
+                  report.id ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
                     <Forward className="mr-2 h-4 w-4" />
                   )}
 
-                  Transmettre à l'administration
+                  Transmettre à
+                  l'administration
                 </Button>
               )}
           </div>
@@ -1443,16 +1805,20 @@ export default function Reports() {
                 <Input
                   className="pl-9"
                   placeholder="Titre, description, auteur..."
-                  value={search}
-                  onChange={(event) =>
+                  value={
+                    search
+                  }
+                  onChange={(
+                    event,
+                  ) =>
                     setSearch(
-                      event.target.value,
+                      event.target
+                        .value,
                     )
                   }
                 />
               </div>
             </div>
-
 
             {/* STATUT */}
 
@@ -1462,7 +1828,9 @@ export default function Reports() {
               </Label>
 
               <Select
-                value={statusFilter}
+                value={
+                  statusFilter
+                }
                 onValueChange={
                   setStatusFilter
                 }
@@ -1479,19 +1847,27 @@ export default function Reports() {
                   {Object.entries(
                     STATUS_LABELS,
                   ).map(
-                    ([value, label]) => (
+                    ([
+                      value,
+                      label,
+                    ]) => (
                       <SelectItem
-                        key={value}
-                        value={value}
+                        key={
+                          value
+                        }
+                        value={
+                          value
+                        }
                       >
-                        {label}
+                        {
+                          label
+                        }
                       </SelectItem>
                     ),
                   )}
                 </SelectContent>
               </Select>
             </div>
-
 
             {/* TYPE */}
 
@@ -1501,7 +1877,9 @@ export default function Reports() {
               </Label>
 
               <Select
-                value={typeFilter}
+                value={
+                  typeFilter
+                }
                 onValueChange={
                   setTypeFilter
                 }
@@ -1518,10 +1896,16 @@ export default function Reports() {
                   {reportTypes.map(
                     (type) => (
                       <SelectItem
-                        key={type.id}
-                        value={type.id}
+                        key={
+                          type.id
+                        }
+                        value={
+                          type.id
+                        }
                       >
-                        {type.name}
+                        {
+                          type.name
+                        }
                       </SelectItem>
                     ),
                   )}
@@ -1534,10 +1918,13 @@ export default function Reports() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={resetFilters}
+              onClick={
+                resetFilters
+              }
             >
               <Filter className="mr-2 h-4 w-4" />
-              Réinitialiser les filtres
+              Réinitialiser les
+              filtres
             </Button>
           </div>
         </CardContent>
@@ -1550,161 +1937,195 @@ export default function Reports() {
   // NEW REPORT DIALOG
   // ==========================================================
 
-  const renderNewReportDialog = () => {
-    return (
-      <Dialog
-        open={isNewReportOpen}
-        onOpenChange={
-          setIsNewReportOpen
-        }
-      >
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              Nouveau rapport
-            </DialogTitle>
+  const renderNewReportDialog =
+    () => {
+      return (
+        <Dialog
+          open={
+            isNewReportOpen
+          }
+          onOpenChange={
+            setIsNewReportOpen
+          }
+        >
+          <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>
+                Nouveau rapport
+              </DialogTitle>
 
-            <DialogDescription>
-              Votre rapport sera envoyé automatiquement au
-              destinataire correspondant à votre rôle.
-            </DialogDescription>
-          </DialogHeader>
+              <DialogDescription>
+                Votre rapport sera
+                envoyé automatiquement
+                au destinataire
+                correspondant à votre
+                rôle.
+              </DialogDescription>
+            </DialogHeader>
 
-          <div className="space-y-5 py-4">
-            {/* DESTINATAIRE */}
+            <div className="space-y-5 py-4">
+              {/* DESTINATAIRE */}
 
-            <div className="rounded-lg border bg-muted/40 p-4">
-              <p className="text-sm font-medium">
-                Destinataire
-              </p>
+              <div className="rounded-lg border bg-muted/40 p-4">
+                <p className="text-sm font-medium">
+                  Destinataire
+                </p>
 
-              <p className="mt-1 text-sm text-muted-foreground">
-                {role === 'employee'
-                  ? structureManager
-                    ? `${structureManager.first_name} ${structureManager.last_name} — Manager de votre structure`
-                    : 'Recherche du manager de votre structure...'
-                  : 'Administrateur du système'}
-              </p>
-            </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {role ===
+                  'employee'
+                    ? structureManager
+                      ? `${structureManager.first_name} ${structureManager.last_name} — Manager de votre structure`
+                      : 'Recherche du manager de votre structure...'
+                    : 'Administrateur du système'}
+                </p>
+              </div>
 
+              {/* TYPE */}
 
-            {/* TYPE */}
+              <div className="space-y-2">
+                <Label htmlFor="report-type">
+                  Type de rapport
+                </Label>
 
-            <div className="space-y-2">
-              <Label htmlFor="report-type">
-                Type de rapport
-              </Label>
+                <Select
+                  value={
+                    newReport.typeId
+                  }
+                  onValueChange={(
+                    value,
+                  ) =>
+                    setNewReport(
+                      (
+                        previous,
+                      ) => ({
+                        ...previous,
+                        typeId:
+                          value,
+                      }),
+                    )
+                  }
+                >
+                  <SelectTrigger id="report-type">
+                    <SelectValue placeholder="Sélectionner un type" />
+                  </SelectTrigger>
 
-              <Select
-                value={newReport.typeId}
-                onValueChange={(value) =>
-                  setNewReport(
-                    (previous) => ({
-                      ...previous,
-                      typeId: value,
-                    }),
-                  )
-                }
-              >
-                <SelectTrigger id="report-type">
-                  <SelectValue placeholder="Sélectionner un type" />
-                </SelectTrigger>
+                  <SelectContent>
+                    {reportTypes.map(
+                      (type) => (
+                        <SelectItem
+                          key={
+                            type.id
+                          }
+                          value={
+                            type.id
+                          }
+                        >
+                          {
+                            type.name
+                          }
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
 
-                <SelectContent>
-                  {reportTypes.map(
-                    (type) => (
-                      <SelectItem
-                        key={type.id}
-                        value={type.id}
-                      >
-                        {type.name}
-                      </SelectItem>
-                    ),
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
+              {/* TITRE */}
 
+              <div className="space-y-2">
+                <Label htmlFor="report-title">
+                  Titre
+                </Label>
 
-            {/* TITRE */}
+                <Input
+                  id="report-title"
+                  value={
+                    newReport.title
+                  }
+                  onChange={(
+                    event,
+                  ) =>
+                    setNewReport(
+                      (
+                        previous,
+                      ) => ({
+                        ...previous,
+                        title:
+                          event
+                            .target
+                            .value,
+                      }),
+                    )
+                  }
+                  placeholder="Titre du rapport"
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="report-title">
-                Titre
-              </Label>
+              {/* DESCRIPTION */}
 
-              <Input
-                id="report-title"
-                value={newReport.title}
-                onChange={(event) =>
-                  setNewReport(
-                    (previous) => ({
-                      ...previous,
-                      title:
-                        event.target.value,
-                    }),
-                  )
-                }
-                placeholder="Titre du rapport"
-              />
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="report-description">
+                  Description
+                </Label>
 
+                <Textarea
+                  id="report-description"
+                  value={
+                    newReport.description
+                  }
+                  onChange={(
+                    event,
+                  ) =>
+                    setNewReport(
+                      (
+                        previous,
+                      ) => ({
+                        ...previous,
+                        description:
+                          event
+                            .target
+                            .value,
+                      }),
+                    )
+                  }
+                  placeholder="Décrivez votre rapport..."
+                  rows={6}
+                />
+              </div>
 
-            {/* DESCRIPTION */}
+              {/* FICHIERS */}
 
-            <div className="space-y-2">
-              <Label htmlFor="report-description">
-                Description
-              </Label>
+              <div className="space-y-3">
+                <Label htmlFor="report-files">
+                  Pièces jointes
+                </Label>
 
-              <Textarea
-                id="report-description"
-                value={
-                  newReport.description
-                }
-                onChange={(event) =>
-                  setNewReport(
-                    (previous) => ({
-                      ...previous,
-                      description:
-                        event.target.value,
-                    }),
-                  )
-                }
-                placeholder="Décrivez votre rapport..."
-                rows={6}
-              />
-            </div>
+                <Input
+                  id="report-files"
+                  type="file"
+                  multiple
+                  onChange={
+                    handleFileChange
+                  }
+                />
 
+                <p className="text-xs text-muted-foreground">
+                  Vous pouvez
+                  sélectionner plusieurs
+                  documents.
+                </p>
 
-            {/* FICHIERS */}
-
-            <div className="space-y-3">
-              <Label htmlFor="report-files">
-                Pièces jointes
-              </Label>
-
-              <Input
-                id="report-files"
-                type="file"
-                multiple
-                onChange={
-                  handleFileChange
-                }
-              />
-
-              <p className="text-xs text-muted-foreground">
-                Vous pouvez sélectionner plusieurs documents.
-              </p>
-
-
-              {/* FICHIERS SÉLECTIONNÉS */}
-
-              {newReport.files.length >
-                0 && (
+                {newReport
+                  .files
+                  .length >
+                  0 && (
                   <div className="space-y-2">
                     {newReport.files.map(
-                      (file, index) => (
+                      (
+                        file,
+                        index,
+                      ) => (
                         <div
                           key={`${file.name}-${index}`}
                           className="flex items-center justify-between rounded-lg border p-3"
@@ -1714,7 +2135,9 @@ export default function Reports() {
 
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium">
-                                {file.name}
+                                {
+                                  file.name
+                                }
                               </p>
 
                               <p className="text-xs text-muted-foreground">
@@ -1742,221 +2165,293 @@ export default function Reports() {
                     )}
                   </div>
                 )}
+              </div>
             </div>
-          </div>
 
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() =>
-                setIsNewReportOpen(false)
-              }
-              disabled={submitting}
-            >
-              Annuler
-            </Button>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setIsNewReportOpen(
+                    false,
+                  )
+                }
+                disabled={
+                  submitting
+                }
+              >
+                Annuler
+              </Button>
 
-            <Button
-              onClick={handleSubmit}
-              disabled={submitting}
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Envoi...
-                </>
-              ) : (
-                <>
-                  <Send className="mr-2 h-4 w-4" />
-                  Envoyer le rapport
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    );
-  };
+              <Button
+                onClick={
+                  handleSubmit
+                }
+                disabled={
+                  submitting
+                }
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Envoi...
+                  </>
+                ) : (
+                  <>
+                    <Send className="mr-2 h-4 w-4" />
+                    Envoyer le
+                    rapport
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      );
+    };
 
 
   // ==========================================================
   // DETAILS DIALOG
   // ==========================================================
 
-  const renderDetailsDialog = () => {
-    if (!selectedReport) {
-      return null;
-    }
+  const renderDetailsDialog =
+    () => {
+      if (!selectedReport) {
+        return null;
+      }
 
-    return (
-      <Dialog
-        open={isDetailsOpen}
-        onOpenChange={
-          setIsDetailsOpen
-        }
-      >
-        <DialogContent className="max-h-[90vh] max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>
-              {selectedReport.title}
-            </DialogTitle>
+      const employeeName =
+        selectedReport.employees
+          ? [
+              selectedReport
+                .employees
+                .first_name,
+              selectedReport
+                .employees
+                .last_name,
+            ]
+              .filter(Boolean)
+              .join(' ')
+          : 'Employé inconnu';
 
-            <DialogDescription>
-              {selectedReport.report_types?.name ??
-                'Type de rapport'}
-            </DialogDescription>
-          </DialogHeader>
+      return (
+        <Dialog
+          open={
+            isDetailsOpen
+          }
+          onOpenChange={
+            setIsDetailsOpen
+          }
+        >
+          <DialogContent className="max-h-[90vh] max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>
+                {
+                  selectedReport.title
+                }
+              </DialogTitle>
 
-          <ScrollArea className="max-h-[65vh] pr-4">
-            <div className="space-y-6">
-              {/* INFORMATIONS */}
+              <DialogDescription>
+                {selectedReport
+                  .report_types
+                  ?.name ??
+                  'Type de rapport'}
+              </DialogDescription>
+            </DialogHeader>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+            <ScrollArea className="max-h-[65vh] pr-4">
+              <div className="space-y-6">
+                {/* AUTEUR */}
+
                 <div>
                   <p className="text-xs font-medium uppercase text-muted-foreground">
-                    Statut
+                    Auteur
                   </p>
 
-                  <Badge
-                    className={`mt-1 ${getStatusClass(
-                      selectedReport.status,
-                    )}`}
-                  >
-                    {getStatusLabel(
-                      selectedReport.status,
-                    )}
-                  </Badge>
+                  <p className="mt-1 text-sm font-medium">
+                    {
+                      employeeName
+                    }
+                  </p>
                 </div>
+
+                {/* INFORMATIONS */}
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-medium uppercase text-muted-foreground">
+                      Statut
+                    </p>
+
+                    <Badge
+                      className={`mt-1 ${getStatusClass(
+                        selectedReport.status,
+                      )}`}
+                    >
+                      {getStatusLabel(
+                        selectedReport.status,
+                      )}
+                    </Badge>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-medium uppercase text-muted-foreground">
+                      Date d'envoi
+                    </p>
+
+                    <p className="mt-1 text-sm">
+                      {format(
+                        new Date(
+                          selectedReport.submitted_at,
+                        ),
+                        'dd MMMM yyyy à HH:mm',
+                        {
+                          locale:
+                            fr,
+                        },
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {/* DESCRIPTION */}
 
                 <div>
-                  <p className="text-xs font-medium uppercase text-muted-foreground">
-                    Date d'envoi
-                  </p>
-
-                  <p className="mt-1 text-sm">
-                    {format(
-                      new Date(
-                        selectedReport.submitted_at,
-                      ),
-                      'dd MMMM yyyy à HH:mm',
-                      {
-                        locale: fr,
-                      },
-                    )}
-                  </p>
-                </div>
-              </div>
-
-
-              {/* DESCRIPTION */}
-
-              <div>
-                <h3 className="mb-2 font-semibold">
-                  Description
-                </h3>
-
-                <div className="rounded-lg bg-muted/40 p-4">
-                  <p className="whitespace-pre-wrap text-sm">
-                    {selectedReport.description ||
-                      'Aucune description.'}
-                  </p>
-                </div>
-              </div>
-
-
-              {/* PIECES JOINTES */}
-
-              <div>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="font-semibold">
-                    Pièces jointes
+                  <h3 className="mb-2 font-semibold">
+                    Description
                   </h3>
 
-                  <Badge variant="outline">
-                    {
-                      (
-                        selectedReport.attachments ??
-                        []
-                      ).length
-                    }
-                  </Badge>
+                  <div className="rounded-lg bg-muted/40 p-4">
+                    <p className="whitespace-pre-wrap text-sm">
+                      {selectedReport
+                        .description ||
+                        'Aucune description.'}
+                    </p>
+                  </div>
                 </div>
 
-                {renderAttachments(
-                  selectedReport.attachments ??
-                  [],
-                )}
+                {/* PIECES JOINTES */}
+
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-semibold">
+                      Pièces jointes
+                    </h3>
+
+                    <Badge variant="outline">
+                      {
+                        (
+                          selectedReport.attachments ??
+                          []
+                        ).length
+                      }
+                    </Badge>
+                  </div>
+
+                  {renderAttachments(
+                    selectedReport.attachments ??
+                      [],
+                  )}
+                </div>
               </div>
-            </div>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
-    );
-  };
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+      );
+    };
 
 
   // ==========================================================
   // PREVIEW DIALOG
   // ==========================================================
 
-  const renderPreviewDialog = () => {
-    return (
-      <Dialog
-        open={isPreviewOpen}
-        onOpenChange={(open) => {
-          setIsPreviewOpen(open);
-
-          if (!open) {
-            setPreviewUrl(null);
-            setPreviewAttachment(null);
+  const renderPreviewDialog =
+    () => {
+      return (
+        <Dialog
+          open={
+            isPreviewOpen
           }
-        }}
-      >
-        <DialogContent className="h-[90vh] max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>
-              {previewAttachment?.file_name ??
-                'Document'}
-            </DialogTitle>
-          </DialogHeader>
+          onOpenChange={(
+            open,
+          ) => {
+            setIsPreviewOpen(
+              open,
+            );
 
-          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-lg bg-muted/30">
-            {previewType === 'image' &&
-              previewUrl && (
-                <img
-                  src={previewUrl}
-                  alt={
-                    previewAttachment?.file_name ??
-                    'Document'
-                  }
-                  className="max-h-[70vh] max-w-full object-contain"
-                />
-              )}
+            if (!open) {
+              setPreviewUrl(
+                null,
+              );
 
-            {previewType === 'pdf' &&
-              previewUrl && (
-                <iframe
-                  src={previewUrl}
-                  title={
-                    previewAttachment?.file_name ??
-                    'Document PDF'
-                  }
-                  className="h-[75vh] w-full rounded-lg border"
-                />
-              )}
+              setPreviewAttachment(
+                null,
+              );
 
-            {previewType ===
-              'unsupported' && (
+              setPreviewType(
+                'unsupported',
+              );
+            }
+          }}
+        >
+          <DialogContent className="h-[90vh] max-w-6xl">
+            <DialogHeader>
+              <DialogTitle>
+                {previewAttachment
+                  ?.file_name ??
+                  'Document'}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-lg bg-muted/30">
+              {previewType ===
+                'image' &&
+                previewUrl && (
+                  <img
+                    src={
+                      previewUrl
+                    }
+                    alt={
+                      previewAttachment
+                        ?.file_name ??
+                      'Document'
+                    }
+                    className="max-h-[70vh] max-w-full object-contain"
+                  />
+                )}
+
+              {previewType ===
+                'pdf' &&
+                previewUrl && (
+                  <iframe
+                    src={
+                      previewUrl
+                    }
+                    title={
+                      previewAttachment
+                        ?.file_name ??
+                      'Document PDF'
+                    }
+                    className="h-[75vh] w-full rounded-lg border"
+                  />
+                )}
+
+              {previewType ===
+                'unsupported' && (
                 <div className="flex flex-col items-center gap-4 p-10 text-center">
                   <AlertCircle className="h-12 w-12 text-muted-foreground" />
 
                   <div>
                     <p className="font-medium">
-                      Prévisualisation non disponible
+                      Prévisualisation
+                      non disponible
                     </p>
 
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Ce format doit être téléchargé pour être consulté.
+                      Ce format doit
+                      être téléchargé
+                      pour être consulté.
                     </p>
                   </div>
 
@@ -1974,46 +2469,54 @@ export default function Reports() {
                   )}
                 </div>
               )}
-          </div>
-        </DialogContent>
-      </Dialog>
-    );
-  };
+            </div>
+          </DialogContent>
+        </Dialog>
+      );
+    };
 
 
   // ==========================================================
   // EMPTY STATE
   // ==========================================================
 
-  const renderEmptyState = () => {
-    return (
-      <Card>
-        <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-          <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
+  const renderEmptyState =
+    () => {
+      return (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+            <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
 
-          <h3 className="font-semibold">
-            Aucun rapport trouvé
-          </h3>
+            <h3 className="font-semibold">
+              Aucun rapport trouvé
+            </h3>
 
-          <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Aucun rapport ne correspond aux filtres sélectionnés.
-          </p>
+            <p className="mt-1 max-w-md text-sm text-muted-foreground">
+              Aucun rapport ne
+              correspond aux filtres
+              sélectionnés.
+            </p>
 
-          {(search ||
-            statusFilter !== 'all' ||
-            typeFilter !== 'all') && (
+            {(search ||
+              statusFilter !==
+                'all' ||
+              typeFilter !==
+                'all') && (
               <Button
                 variant="outline"
                 className="mt-4"
-                onClick={resetFilters}
+                onClick={
+                  resetFilters
+                }
               >
-                Réinitialiser les filtres
+                Réinitialiser les
+                filtres
               </Button>
             )}
-        </CardContent>
-      </Card>
-    );
-  };
+          </CardContent>
+        </Card>
+      );
+    };
 
 
   // ==========================================================
@@ -2044,9 +2547,10 @@ export default function Reports() {
   return (
     <DashboardLayout>
       <div className="space-y-6 p-4 md:p-6">
-        {/* ================================================== */}
-        {/* HEADER */}
-        {/* ================================================== */}
+
+        {/* ==================================================
+            HEADER
+        ================================================== */}
 
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -2055,14 +2559,17 @@ export default function Reports() {
             </h1>
 
             <p className="text-muted-foreground">
-              Gérez et consultez vos rapports professionnels.
+              Gérez et consultez vos
+              rapports professionnels.
             </p>
           </div>
 
           {role !== 'admin' && (
             <Button
               onClick={() =>
-                setIsNewReportOpen(true)
+                setIsNewReportOpen(
+                  true,
+                )
               }
             >
               <Plus className="mr-2 h-4 w-4" />
@@ -2072,14 +2579,18 @@ export default function Reports() {
         </div>
 
 
-        {/* ================================================== */}
-        {/* MANAGER TABS */}
-        {/* ================================================== */}
+        {/* ==================================================
+            MANAGER
+        ================================================== */}
 
         {role === 'manager' ? (
           <Tabs
-            value={activeTab}
-            onValueChange={(value) =>
+            value={
+              activeTab
+            }
+            onValueChange={(
+              value,
+            ) =>
               setActiveTab(
                 value as ReportTab,
               )
@@ -2101,7 +2612,7 @@ export default function Reports() {
               {renderFilters()}
 
               {filteredReports.length >
-                0 ? (
+              0 ? (
                 <div className="grid gap-4 lg:grid-cols-2">
                   {filteredReports.map(
                     renderReportCard,
@@ -2116,7 +2627,7 @@ export default function Reports() {
               {renderFilters()}
 
               {filteredReports.length >
-                0 ? (
+              0 ? (
                 <div className="grid gap-4 lg:grid-cols-2">
                   {filteredReports.map(
                     renderReportCard,
@@ -2129,13 +2640,14 @@ export default function Reports() {
           </Tabs>
         ) : (
           <>
-            {/* ================================================== */}
-            {/* EMPLOYEE / ADMIN */}
-            {/* ================================================== */}
+            {/* ==================================================
+                EMPLOYEE / ADMIN
+            ================================================== */}
 
             {renderFilters()}
 
-            {filteredReports.length > 0 ? (
+            {filteredReports.length >
+            0 ? (
               <div className="grid gap-4 lg:grid-cols-2">
                 {filteredReports.map(
                   renderReportCard,
@@ -2148,9 +2660,9 @@ export default function Reports() {
         )}
 
 
-        {/* ================================================== */}
-        {/* DIALOGS */}
-        {/* ================================================== */}
+        {/* ==================================================
+            DIALOGS
+        ================================================== */}
 
         {renderNewReportDialog()}
 

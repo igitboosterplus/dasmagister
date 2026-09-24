@@ -44,8 +44,10 @@ export default defineConfig({
           },
         ],
       },
-    }
-    ),
+      devOptions: {
+        enabled: true,
+      },
+    }),
   ],
   // test: {
   //   environment: "jsdom",

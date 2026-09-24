@@ -9,19 +9,30 @@ interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>
 }
 
+declare global {
+  interface Window {
+    deferredPrompt: BeforeInstallPromptEvent | null
+  }
+}
+
 export default function InstallButton() {
   const [installPrompt, setInstallPrompt] =
-    useState<BeforeInstallPromptEvent | null>(null)
+    useState<BeforeInstallPromptEvent | null>(window.deferredPrompt || null)
 
   useEffect(() => {
     console.log('InstallButton monté')
 
+    // Capture si l'événement a déjà eu lieu et été stocké sur window
+    if (window.deferredPrompt) {
+      setInstallPrompt(window.deferredPrompt)
+    }
+
     const handler = (event: Event) => {
       console.log('beforeinstallprompt détecté')
-
       event.preventDefault()
-
-      setInstallPrompt(event as BeforeInstallPromptEvent)
+      const promptEvent = event as BeforeInstallPromptEvent
+      window.deferredPrompt = promptEvent
+      setInstallPrompt(promptEvent)
     }
 
     window.addEventListener('beforeinstallprompt', handler)
@@ -43,6 +54,7 @@ export default function InstallButton() {
 
     console.log('Résultat installation:', result.outcome)
 
+    window.deferredPrompt = null;
     setInstallPrompt(null)
   }
 

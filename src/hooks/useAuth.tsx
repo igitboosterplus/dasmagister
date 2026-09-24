@@ -53,7 +53,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(
+const AuthContext = createContext< AuthContextType | undefined >(
   undefined
 );
 

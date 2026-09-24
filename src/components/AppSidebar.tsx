@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -11,29 +12,142 @@ import {
   MapPin,
 } from 'lucide-react';
 import guimsLogo from '@/assets/guims-logo.png';
+import { supabase } from '@/integrations/supabase/client';
 
 interface NavItem {
   label: string;
   icon: React.ElementType;
   path: string;
   roles: string[];
+  requiresSiteResponsibility?: boolean;
 }
+
 const navItems: NavItem[] = [
-  { label: 'Tableau de bord', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'manager', 'employee'] },
-  { label: 'Pointage', icon: Clock, path: '/attendance', roles: ['manager', 'employee'] },
-  { label: 'Employés', icon: Users, path: '/employees', roles: ['admin', 'manager'] },
-  { label: 'Sites', icon: MapPin, path: '/manager/sites', roles: ['manager'] },
-  { label: 'Gestion pointage', icon: Clock, path: '/manager/attendance', roles: ['admin', 'manager'] },
-  { label: 'Rapports', icon: BarChart3, path: '/reports', roles: ['admin', 'manager', 'employee'] },
-  { label: 'Paramètres', icon: Settings, path: '/settings', roles: ['admin'] },
+  {
+    label: 'Tableau de bord',
+    icon: LayoutDashboard,
+    path: '/dashboard',
+    roles: ['admin', 'manager', 'employee'],
+  },
+  {
+    label: 'Pointage',
+    icon: Clock,
+    path: '/attendance',
+    roles: ['manager', 'employee'],
+  },
+  {
+    label: 'Employés',
+    icon: Users,
+    path: '/employees',
+    roles: ['admin', 'manager'],
+  },
+  {
+    label: 'Sites',
+    icon: MapPin,
+    path: '/manager/sites',
+    roles: ['manager'],
+  },
+  {
+    label: 'Gestion pointage',
+    icon: Clock,
+    path: '/manager/attendance',
+    roles: ['admin', 'manager'],
+  },
+  {
+    label: 'Rapports',
+    icon: BarChart3,
+    path: '/reports',
+    roles: ['admin', 'manager', 'employee'],
+  },
+  {
+    label: 'Paramètres',
+    icon: Settings,
+    path: '/settings',
+    roles: ['admin'],
+  },
+  {
+    label: 'Gestion Site',
+    icon: Settings,
+    path: '/responsablesite',
+    roles: ['employee'],
+    requiresSiteResponsibility: true,
+  },
 ];
 
 export default function AppSidebar() {
   const { profile, role, signOut } = useAuth();
+
   const navigate = useNavigate();
   const location = useLocation();
 
-  const filteredItems = navItems.filter((item) => role && item.roles.includes(role));
+  const [isSiteResponsible, setIsSiteResponsible] = useState(false);
+  const [checkingResponsibility, setCheckingResponsibility] = useState(true);
+
+  /**
+   * Vérifie si l'employé connecté est responsable
+   * d'au moins un site actif.
+   */
+  useEffect(() => {
+    const checkSiteResponsibility = async () => {
+      if (!profile?.id || role !== 'employee') {
+        setIsSiteResponsible(false);
+        setCheckingResponsibility(false);
+        return;
+      }
+
+      setCheckingResponsibility(true);
+
+      try {
+        const { data, error } = await supabase
+          .from('employee_sites')
+          .select('id')
+          .eq('employee_id', profile.id)
+          .eq('is_responsible', true)
+          .eq('is_active', true)
+          .limit(1);
+
+        if (error) {
+          console.error(
+            'Erreur lors de la vérification du responsable de site:',
+            error
+          );
+
+          setIsSiteResponsible(false);
+          return;
+        }
+
+        setIsSiteResponsible((data?.length ?? 0) > 0);
+      } catch (error) {
+        console.error(
+          'Erreur inattendue lors de la vérification:',
+          error
+        );
+
+        setIsSiteResponsible(false);
+      } finally {
+        setCheckingResponsibility(false);
+      }
+    };
+
+    checkSiteResponsibility();
+  }, [profile?.id, role]);
+
+  /**
+   * Filtrage des éléments du menu.
+   */
+  const filteredItems = navItems.filter((item) => {
+    // Vérification du rôle
+    if (!role || !item.roles.includes(role)) {
+      return false;
+    }
+
+    // Élément nécessitant d'être responsable d'un site
+    if (item.requiresSiteResponsibility) {
+      return isSiteResponsible;
+    }
+
+    return true;
+  });
 
   const getRoleBadge = (role: string | null) => {
     const labels: Record<string, string> = {
@@ -41,6 +155,7 @@ export default function AppSidebar() {
       manager: 'Manager',
       employee: 'Employé',
     };
+
     return labels[role || ''] || role;
   };
 
@@ -48,46 +163,65 @@ export default function AppSidebar() {
     <aside className="flex h-screen w-64 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
       {/* Logo */}
       <div className="flex items-center gap-3 px-5 py-5 border-b border-sidebar-border">
-        <img src={guimsLogo} alt="Guims Group" className="w-9 h-9" />
+        <img
+          src={guimsLogo}
+          alt="Guims Group"
+          className="w-9 h-9"
+        />
+
         <div>
-          <h2 className="font-display text-sm font-bold text-sidebar-primary-foreground">DasMAGISTER</h2>
-          <p className="text-[10px] uppercase tracking-widest opacity-60">Gestion RH</p>
+          <h2 className="font-display text-sm font-bold text-sidebar-primary-foreground">
+            DasMAGISTER
+          </h2>
+
+          <p className="text-[10px] uppercase tracking-widest opacity-60">
+            Gestion RH
+          </p>
         </div>
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-        {filteredItems.map((item) => {
-          const isActive = location.pathname === item.path;
-          return (
-            <button
-              key={item.path}
-              onClick={() => navigate(item.path)}
-              className={`sidebar-nav-item w-full text-left ${isActive
-                  ? 'bg-sidebar-accent text-sidebar-primary'
-                  : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+        {!checkingResponsibility &&
+          filteredItems.map((item) => {
+            const isActive =
+              location.pathname === item.path;
+
+            return (
+              <button
+                key={item.path}
+                onClick={() => navigate(item.path)}
+                className={`sidebar-nav-item w-full text-left ${
+                  isActive
+                    ? 'bg-sidebar-accent text-sidebar-primary'
+                    : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
                 }`}
-            >
-              <item.icon className="h-4 w-4 flex-shrink-0" />
-              {item.label}
-            </button>
-          );
-        })}
+              >
+                <item.icon className="h-4 w-4 flex-shrink-0" />
+                {item.label}
+              </button>
+            );
+          })}
       </nav>
 
       {/* User info */}
       <div className="border-t border-sidebar-border p-4">
         <div className="mb-3">
-          < a href="/profile">
+          <a href="/profile">
             <p className="text-sm font-medium text-sidebar-primary-foreground truncate">
               {profile?.first_name} {profile?.last_name}
             </p>
           </a>
+
           <div className="flex items-center gap-1.5 mt-1">
             <Shield className="h-3 w-3 text-sidebar-primary" />
-            <span className="text-[11px] text-sidebar-primary">{getRoleBadge(role)}</span>
+
+            <span className="text-[11px] text-sidebar-primary">
+              {getRoleBadge(role)}
+            </span>
           </div>
         </div>
+
         <button
           onClick={signOut}
           className="sidebar-nav-item w-full text-left text-sidebar-foreground/60 hover:text-destructive hover:bg-destructive/10"

@@ -18,6 +18,7 @@ import Dashemployer from "./pages/Dasboard/employer";
 import ManagerSites from "./pages/Dasboard/ManagerSites";
 
 import ManagerAttendanceReview from './pages/managerAttence';
+import ResponsableSite from "./pages/Responsablesite";
 
 import Profile from "./pages/profil";
 
@@ -40,6 +41,8 @@ const App = () => (
             <Route path="/dashboard/manager" element={<Dashmanager />} />
             <Route path="/dashboard/employee" element={<Dashemployer />} />
             <Route path="/manager/sites" element={<ManagerSites />} />
+
+            <Route path="/responsablesite" element={<ResponsableSite/>}/>
 
             <Route path="/attendance" element={<Attendance />} />
             <Route path="/employees" element={<Employees />} />
