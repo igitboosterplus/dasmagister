@@ -17,6 +17,10 @@ import Dashmanager from "./pages/Dasboard/manager";
 import Dashemployer from "./pages/Dasboard/employer";
 import ManagerSites from "./pages/Dasboard/ManagerSites";
 
+import AdminReports from "./pages/Reports/Admin";
+import ManagerReports from "./pages/Reports/Manager";
+import EmployerReports from "./pages/Reports/Employer";
+
 import ManagerAttendanceReview from './pages/managerAttence';
 import ResponsableSite from "./pages/Responsablesite";
 
@@ -46,7 +50,14 @@ const App = () => (
 
             <Route path="/attendance" element={<Attendance />} />
             <Route path="/employees" element={<Employees />} />
+
+
             <Route path="/reports" element={<Reports />} />
+            <Route path="/reports/admin" element={<AdminReports />} />
+            <Route path="/reports/manager" element={<ManagerReports />} />
+            <Route path="/reports/employer" element={<EmployerReports />} />
+
+
             <Route path="/settings" element={<Settings />} />
             <Route path="/manager/attendance" element={<ManagerAttendanceReview />} />
             <Route path="*" element={<NotFound />} />

@@ -33,7 +33,7 @@ const navItems: NavItem[] = [
     label: 'Pointage',
     icon: Clock,
     path: '/attendance',
-    roles: ['manager', 'employee'],
+    roles: [ 'employee'],
   },
   {
     label: 'Employés',
@@ -56,15 +56,27 @@ const navItems: NavItem[] = [
   {
     label: 'Rapports',
     icon: BarChart3,
-    path: '/reports',
-    roles: ['admin', 'manager', 'employee'],
-  },
-  {
-    label: 'Paramètres',
-    icon: Settings,
-    path: '/settings',
+    path: '/reports/admin',
     roles: ['admin'],
   },
+  {
+    label: 'Rapports',
+    icon: BarChart3,
+    path: '/reports/manager',
+    roles: ['manager'],
+  },
+  {
+    label: 'Rapports',
+    icon: BarChart3,
+    path: '/reports/employer',
+    roles: ['employee'],
+  },
+  // {
+  //   label: 'Paramètres',
+  //   icon: Settings,
+  //   path: '/settings',
+  //   roles: ['admin'],
+  // },
   {
     label: 'Gestion Site',
     icon: Settings,

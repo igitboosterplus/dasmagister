@@ -115,7 +115,7 @@ interface Site {
 
   gps_required: boolean;
 
-  wifi_ssid: string | null;
+  allowed_ip: string | null;
   wifi_required: boolean;
 
   offline_attendance_enabled: boolean;
@@ -155,7 +155,7 @@ interface SiteFormValues {
 
   gps_required: boolean;
 
-  wifi_ssid: string;
+  allowed_ip: string;
   wifi_required: boolean;
 
   offline_attendance_enabled: boolean;
@@ -233,7 +233,7 @@ const EMPTY_FORM: SiteFormValues = {
 
   gps_required: false,
 
-  wifi_ssid: '',
+  allowed_ip: '',
   wifi_required: false,
 
   offline_attendance_enabled: true,
@@ -394,7 +394,7 @@ export default function ManagerSites() {
           location_radius_m,
           max_gps_accuracy_m,
           gps_required,
-          wifi_ssid,
+          allowed_ip,
           wifi_required,
           offline_attendance_enabled,
           timezone,
@@ -497,8 +497,8 @@ export default function ManagerSites() {
             gps_required:
               site.gps_required ?? false,
 
-            wifi_ssid:
-              site.wifi_ssid,
+            allowed_ip:
+              site.allowed_ip,
 
             wifi_required:
               site.wifi_required ?? false,
@@ -929,12 +929,10 @@ export default function ManagerSites() {
     // Wi-Fi
     if (
       formValues.wifi_required &&
-      !formValues.wifi_ssid.trim()
+      !formValues.allowed_ip.trim()
     ) {
-
-      errors.wifi_ssid =
-        'Le SSID Wi-Fi est requis lorsque le Wi-Fi est obligatoire.';
-
+      errors.allowed_ip =
+        "L'adresse IP publique est requise lorsque le réseau est obligatoire.";
     }
 
     setFormErrors(errors);
@@ -1265,8 +1263,8 @@ export default function ManagerSites() {
       gps_required:
         site.gps_required,
 
-      wifi_ssid:
-        site.wifi_ssid || '',
+      allowed_ip:
+        site.allowed_ip || '',
 
       wifi_required:
         site.wifi_required,
@@ -1505,8 +1503,8 @@ export default function ManagerSites() {
             gps_required:
               formValues.gps_required,
 
-            wifi_ssid:
-              formValues.wifi_ssid.trim() || null,
+            allowed_ip:
+              formValues.allowed_ip.trim() || null,
 
             wifi_required:
               formValues.wifi_required,
@@ -1629,8 +1627,8 @@ export default function ManagerSites() {
             gps_required:
               formValues.gps_required,
 
-            wifi_ssid:
-              formValues.wifi_ssid.trim() || null,
+            allowed_ip:
+              formValues.allowed_ip.trim() || null,
 
             wifi_required:
               formValues.wifi_required,
@@ -2050,8 +2048,8 @@ export default function ManagerSites() {
               <Card
                 key={site.id}
                 className={`relative transition-opacity ${!site.is_active
-                    ? 'opacity-60'
-                    : ''
+                  ? 'opacity-60'
+                  : ''
                   }`}
               >
 
@@ -2281,15 +2279,15 @@ export default function ManagerSites() {
 
                     <span
                       className={`inline-flex items-center gap-1.5 text-xs font-medium ${site.is_active
-                          ? 'text-success'
-                          : 'text-muted-foreground'
+                        ? 'text-success'
+                        : 'text-muted-foreground'
                         }`}
                     >
 
                       <span
                         className={`h-1.5 w-1.5 rounded-full ${site.is_active
-                            ? 'bg-success'
-                            : 'bg-muted-foreground'
+                          ? 'bg-success'
+                          : 'bg-muted-foreground'
                           }`}
                       />
 
@@ -2890,28 +2888,47 @@ export default function ManagerSites() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 flex-1 w-full">
 
                     <Label htmlFor="wifi-ssid">
-                      SSID du Wi-Fi
+                      Adresse IP publique autorisée
                     </Label>
 
-                    <Input
-                      id="wifi-ssid"
-                      placeholder="Ex : ENTREPRISE_WIFI"
-                      value={formValues.wifi_ssid}
-                      onChange={(e) =>
-                        updateField(
-                          'wifi_ssid',
-                          e.target.value
-                        )
-                      }
-                    />
+                    <div className="flex gap-2 w-full">
+                      <Input
+                        id="wifi-ssid"
+                        placeholder="Ex : 82.124.63.12"
+                        value={formValues.allowed_ip}
+                        onChange={(e) =>
+                          updateField(
+                            'allowed_ip',
+                            e.target.value
+                          )
+                        }
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={async () => {
+                          try {
+                            const res = await fetch('https://api.ipify.org?format=json');
+                            const data = await res.json();
+                            if (data.ip) {
+                              updateField('allowed_ip', data.ip);
+                            }
+                          } catch (e) {
+                            console.error('Fetch IP error', e);
+                          }
+                        }}
+                      >
+                        Mon IP
+                      </Button>
+                    </div>
 
-                    {formErrors.wifi_ssid && (
+                    {formErrors.allowed_ip && (
 
                       <p className="text-xs text-destructive">
-                        {formErrors.wifi_ssid}
+                        {formErrors.allowed_ip}
                       </p>
 
                     )}
@@ -3659,11 +3676,11 @@ export default function ManagerSites() {
                     <div>
 
                       <p className="text-muted-foreground text-xs mb-1">
-                        SSID
+                        Adresse IP publique
                       </p>
 
                       <p className="font-medium">
-                        {selectedSite.wifi_ssid ||
+                        {selectedSite.allowed_ip ||
                           'Non configuré'}
                       </p>
 
@@ -3831,15 +3848,15 @@ export default function ManagerSites() {
 
                     <span
                       className={`inline-flex items-center gap-1.5 text-xs font-semibold ${selectedSite.is_active
-                          ? 'text-success'
-                          : 'text-muted-foreground'
+                        ? 'text-success'
+                        : 'text-muted-foreground'
                         }`}
                     >
 
                       <span
                         className={`h-1.5 w-1.5 rounded-full ${selectedSite.is_active
-                            ? 'bg-success'
-                            : 'bg-muted-foreground'
+                          ? 'bg-success'
+                          : 'bg-muted-foreground'
                           }`}
                       />
 
