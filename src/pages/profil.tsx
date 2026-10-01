@@ -211,7 +211,7 @@ export default function Profile() {
   // ==========================================================
 
   const email =
-    profile?.email || '';
+    (profile as any)?.email || '';
 
 
   // ==========================================================
@@ -465,7 +465,64 @@ export default function Profile() {
         // SITE + VILLE
         // ====================================================
 
-        if (employeeData.site_id) {
+        /*
+         * Le site d'un employé est déterminé depuis
+         * employee_sites et non depuis employees.site_id.
+         *
+         * On recherche uniquement l'affectation active.
+         *
+         * Si plusieurs affectations actives existent,
+         * on privilégie celle marquée comme responsable,
+         * puis la plus récente.
+         */
+
+        const {
+          data: employeeSiteData,
+          error: employeeSiteError,
+        } = await supabase
+          .from('employee_sites')
+          .select(`
+    site_id,
+    is_active,
+    is_responsible,
+    assigned_at
+  `)
+          .eq(
+            'employee_id',
+            employeeData.id
+          )
+          .eq(
+            'is_active',
+            true
+          )
+          .order(
+            'is_responsible',
+            {
+              ascending: false,
+            }
+          )
+          .order(
+            'assigned_at',
+            {
+              ascending: false,
+            }
+          )
+          .limit(1)
+          .maybeSingle();
+
+
+        if (employeeSiteError) {
+
+          console.error(
+            'Erreur récupération affectation site:',
+            employeeSiteError
+          );
+
+        } else if (employeeSiteData?.site_id) {
+
+          // ==============================================
+          // SITE
+          // ==============================================
 
           const {
             data: siteData,
@@ -473,17 +530,17 @@ export default function Profile() {
           } = await supabase
             .from('sites')
             .select(`
-              id,
-              name,
-              type,
-              work_start,
-              work_end,
-              is_active,
-              city_id
-            `)
+      id,
+      name,
+      type,
+      work_start,
+      work_end,
+      is_active,
+      city_id
+    `)
             .eq(
               'id',
-              employeeData.site_id
+              employeeSiteData.site_id
             )
             .maybeSingle();
 
@@ -512,9 +569,9 @@ export default function Profile() {
               } = await supabase
                 .from('cities')
                 .select(`
-                  id,
-                  name
-                `)
+          id,
+          name
+        `)
                 .eq(
                   'id',
                   siteData.city_id
@@ -537,6 +594,10 @@ export default function Profile() {
             }
 
 
+            // ==============================================
+            // LOCAL STATE
+            // ==============================================
+
             if (mounted) {
 
               setSite({
@@ -553,9 +614,25 @@ export default function Profile() {
               });
 
             }
-          }
-        }
 
+          }
+
+        } else {
+
+          /*
+           * Aucun site actif.
+           *
+           * On vide explicitement le state pour éviter
+           * d'afficher éventuellement une ancienne valeur.
+           */
+
+          if (mounted) {
+
+            setSite(null);
+
+          }
+
+        }
 
         // ====================================================
         // ROLE
@@ -1129,8 +1206,8 @@ export default function Profile() {
                   className={`
                     mt-4
                     ${getRoleBadgeClass(
-                      currentRole
-                    )}
+                    currentRole
+                  )}
                   `}
                 >
 

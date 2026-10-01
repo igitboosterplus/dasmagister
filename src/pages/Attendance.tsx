@@ -36,6 +36,8 @@ import {
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
+import { EmployeeMissionsTab } from '@/components/DasSarl/DasSarlEmployeeFeatures';
+
 /* ============================================================
  * TYPES
  * ========================================================== */
@@ -667,6 +669,8 @@ export default function Attendance() {
       null
     );
 
+  const [isDasSarlStructure, setIsDasSarlStructure] = useState(false);
+
   const [events, setEvents] =
     useState<AttendanceEvent[]>(
       []
@@ -844,6 +848,17 @@ export default function Attendance() {
       }
 
       setSites(result);
+
+      if (profile?.structure_id) {
+        supabase
+          .from('structures')
+          .select('name')
+          .eq('id', profile.structure_id)
+          .single()
+          .then(({ data }) => {
+            setIsDasSarlStructure(data?.name?.toLowerCase() === 'das-sarl');
+          });
+      }
 
       return result;
     }, [profile]);
@@ -3168,6 +3183,20 @@ export default function Attendance() {
          * HEADER
          * ================================================== */}
 
+        {isDasSarlStructure && profile?.id && (
+          <Card className="border-indigo-200 overflow-hidden shadow-sm mb-6">
+            <CardHeader className="bg-indigo-50/50 pb-4">
+              <CardTitle className="text-indigo-800 flex items-center gap-2">
+                <MapPin className="h-5 w-5" />
+                Pointage de Mission (Hors site)
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-6">
+              <EmployeeMissionsTab employeeId={profile.id} />
+            </CardContent>
+          </Card>
+        )}
+
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="page-title">
@@ -3259,9 +3288,9 @@ export default function Attendance() {
                   {nearestSite && (
                     <div
                       className={`rounded-lg border p-4 ${nearestSite.distanceM <=
-                          nearestSite.site.location_radius_m
-                          ? 'border-green-200 bg-green-50'
-                          : 'border-amber-200 bg-amber-50'
+                        nearestSite.site.location_radius_m
+                        ? 'border-green-200 bg-green-50'
+                        : 'border-amber-200 bg-amber-50'
                         }`}
                     >
                       <div className="flex items-start gap-3">

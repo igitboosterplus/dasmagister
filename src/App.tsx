@@ -8,9 +8,10 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Attendance from "./pages/Attendance";
 import Employees from "./pages/Employees";
-import Reports from "./pages/Reports";
+
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import PWAInstallPrompt from "./components/pwa/PWAInstallPrompt";
 
 import Dashadmin from "./pages/Dasboard/admin";
 import Dashmanager from "./pages/Dasboard/manager";
@@ -21,10 +22,12 @@ import AdminReports from "./pages/Reports/Admin";
 import ManagerReports from "./pages/Reports/Manager";
 import EmployerReports from "./pages/Reports/Employer";
 
+
 import ManagerAttendanceReview from './pages/managerAttence';
 import ResponsableSite from "./pages/Responsablesite";
 
 import Profile from "./pages/profil";
+import DasSarlPage from "./pages/DasSarlPage";
 
 const queryClient = new QueryClient();
 
@@ -35,7 +38,8 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <AuthProvider>
-          <Routes> 
+          <PWAInstallPrompt />
+          <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -46,17 +50,17 @@ const App = () => (
             <Route path="/dashboard/employee" element={<Dashemployer />} />
             <Route path="/manager/sites" element={<ManagerSites />} />
 
-            <Route path="/responsablesite" element={<ResponsableSite/>}/>
+            <Route path="/responsablesite" element={<ResponsableSite />} />
 
             <Route path="/attendance" element={<Attendance />} />
             <Route path="/employees" element={<Employees />} />
 
 
-            <Route path="/reports" element={<Reports />} />
             <Route path="/reports/admin" element={<AdminReports />} />
             <Route path="/reports/manager" element={<ManagerReports />} />
             <Route path="/reports/employer" element={<EmployerReports />} />
 
+            <Route path="/dassarl" element={<DasSarlPage />} />
 
             <Route path="/settings" element={<Settings />} />
             <Route path="/manager/attendance" element={<ManagerAttendanceReview />} />

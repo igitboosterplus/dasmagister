@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 
 import guimsLogo from '@/assets/guims-logo.png';
-import InstallButton from '@/components/btndownload';
+
 
 
 // ============================================================
@@ -167,7 +167,7 @@ export default function Login() {
           data ?? []
         );
         console.log('welcome to you this is your problem how can i hepl you to resolve this problem');
-        console.log( data);
+        console.log(data);
 
       } catch (error) {
 
@@ -337,7 +337,7 @@ export default function Login() {
 
     }
   };
-  
+
 
 
   // ==========================================================
@@ -448,8 +448,8 @@ export default function Login() {
             'Erreur d’inscription',
 
           description:
-            error.code ===
-            'over_email_send_rate_limit'
+            (error as any).code ===
+              'over_email_send_rate_limit'
 
               ? 'Trop de tentatives d’envoi d’e-mail. Veuillez patienter avant de réessayer.'
 
@@ -749,7 +749,7 @@ export default function Login() {
       </div>
     );
   }
-{{console.log(structures);}}
+  { { console.log(structures); } }
 
   // ==========================================================
   // FORMULAIRE DE CONNEXION / INSCRIPTION
@@ -800,7 +800,6 @@ export default function Login() {
           mb-4
         ">
           Das-Sarl / MAGISTERE
-          <InstallButton/>
         </h1>
 
 

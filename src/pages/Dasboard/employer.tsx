@@ -44,6 +44,7 @@ export default function Dashboardemployee() {
     useState<Attendance | null>(null);
 
   const [siteName, setSiteName] = useState<string | null>(null);
+  const [structureName, setStructureName] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -114,8 +115,14 @@ export default function Dashboardemployee() {
         .limit(1)
         .maybeSingle();
 
-      const siteObj = esData?.sites as any;
-      setSiteName(siteObj?.name ?? null);
+      if (profile.structure_id) {
+        const { data: stData } = await supabase
+          .from('structures')
+          .select('name')
+          .eq('id', profile.structure_id)
+          .single();
+        if (stData) setStructureName(stData.name);
+      }
 
     } catch (error) {
       console.error('Erreur récupération dashboard:', error);

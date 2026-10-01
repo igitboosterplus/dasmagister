@@ -59,6 +59,7 @@ import {
   AlertDescription,
   AlertTitle,
 } from '@/components/ui/alert';
+import { useToast } from '@/hooks/use-toast';
 
 // ============================================================
 // TYPES
@@ -120,6 +121,7 @@ interface PositionItem {
 
 export default function Employees() {
   const { role, profile } = useAuth();
+  const { toast } = useToast();
 
   // ==========================================================
   // DATA
@@ -191,6 +193,13 @@ export default function Employees() {
 
   const [errorMessage, setErrorMessage] =
     useState<string | null>(null);
+
+  useEffect(() => {
+    if (errorMessage) {
+      toast({ title: 'Erreur', description: errorMessage, variant: 'destructive' });
+      setErrorMessage(null);
+    }
+  }, [errorMessage, toast]);
 
   // ==========================================================
   // HELPERS
@@ -454,7 +463,6 @@ export default function Employees() {
             phone,
             structure_id,
             is_active,
-            deactivated_at,
 
             employee_roles (
               role
@@ -669,12 +677,12 @@ export default function Employees() {
 
       const filteredSites =
         role === 'manager' &&
-        profile?.structure_id
+          profile?.structure_id
           ? (data || []).filter(
-              (site) =>
-                site.structure_id ===
-                profile.structure_id
-            )
+            (site) =>
+              site.structure_id ===
+              profile.structure_id
+          )
           : data || [];
 
       setSites(filteredSites);
@@ -1268,7 +1276,7 @@ export default function Employees() {
         // ----------------------------------------------------
 
         if (
-          selectedSiteIds.length === 0
+          selectedSiteIds.length === 0 && selectedRole !== 'manager'
         ) {
           throw new Error(
             'Un employé doit être affecté à au moins un site.'
@@ -1372,7 +1380,7 @@ export default function Employees() {
 
         const {
           error:
-            deactivateSitesError,
+          deactivateSitesError,
         } = await supabase
           .from('employee_sites')
           .update({
@@ -1411,7 +1419,7 @@ export default function Employees() {
           const isResponsible =
             isResponsiblePosition &&
             selectedResponsibleSiteId ===
-              siteId;
+            siteId;
 
           const {
             error: upsertError,
@@ -1462,7 +1470,7 @@ export default function Employees() {
         const {
           data: existingRole,
           error:
-            roleFetchError,
+          roleFetchError,
         } = await supabase
           .from('employee_roles')
           .select(`
@@ -1488,10 +1496,18 @@ export default function Employees() {
         // 11. METTRE À JOUR / CRÉER LE RÔLE
         // ====================================================
 
-        if (existingRole) {
+        if (selectedRole === 'manager' && (!existingRole || existingRole.role !== 'manager')) {
+          const { error: promoteError } = await supabase.rpc('promote_employee_to_manager', {
+            p_employee_id: editingEmployee.id,
+          });
+
+          if (promoteError) {
+            throw new Error(`Impossible de promouvoir l'employé: ${promoteError.message}`);
+          }
+        } else if (existingRole && selectedRole !== 'manager') {
           const {
             error:
-              roleUpdateError,
+            roleUpdateError,
           } = await supabase
             .from('employee_roles')
             .update({
@@ -1510,10 +1526,10 @@ export default function Employees() {
               `Impossible de modifier le rôle : ${roleUpdateError.message}`
             );
           }
-        } else {
+        } else if (!existingRole && selectedRole !== 'manager') {
           const {
             error:
-              roleInsertError,
+            roleInsertError,
           } = await supabase
             .from('employee_roles')
             .insert({
@@ -1643,20 +1659,7 @@ export default function Employees() {
             ERROR
         ================================================== */}
 
-        {errorMessage && (
-          <Alert
-            variant="destructive"
-            className="mb-6"
-          >
-            <AlertTitle>
-              Une erreur est survenue
-            </AlertTitle>
-
-            <AlertDescription>
-              {errorMessage}
-            </AlertDescription>
-          </Alert>
-        )}
+        {/* Removed inline Alert, using toast via useEffect now */}
 
         {/* ==================================================
             TOOLBAR
@@ -1742,7 +1745,7 @@ export default function Employees() {
 
               const structureEmployees =
                 employeesByStructure[
-                  structure.id
+                structure.id
                 ] || [];
 
               if (
@@ -1950,8 +1953,8 @@ export default function Employees() {
                                         className={`
                                           badge-status
                                           ${roleBadgeVariant(
-                                            employee.role
-                                          )}
+                                          employee.role
+                                        )}
                                         `}
                                       >
                                         {getRoleLabel(
@@ -1966,7 +1969,7 @@ export default function Employees() {
                                     <td className="px-4 py-3">
 
                                       {employee.sites.length >
-                                      0 ? (
+                                        0 ? (
                                         <div className="flex flex-wrap gap-1.5">
 
                                           {employee.sites.map(

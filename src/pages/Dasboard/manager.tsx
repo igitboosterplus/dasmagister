@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/hooks/useAuth';
+import { useToast } from '@/hooks/use-toast';
+import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 
 import {
@@ -20,12 +22,18 @@ import {
 } from 'lucide-react';
 
 
-
 interface Stats {
   totalEmployees: number;
   presentToday: number;
   lateToday: number;
   absentToday: number;
+}
+
+interface PendingEmployee {
+  id: string;
+  first_name: string;
+  last_name: string;
+  created_at: string;
 }
 
 interface Structure {
@@ -36,6 +44,9 @@ interface Structure {
 
 export default function DashboardManager() {
   const { role, profile } = useAuth();
+  const { toast } = useToast();
+  const [pendingEmployees, setPendingEmployees] = useState<PendingEmployee[]>([]);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const [stats, setStats] = useState<Stats>({
     totalEmployees: 0,
@@ -284,7 +295,47 @@ export default function DashboardManager() {
     );
   }
 
+
+  // ==========================================================
+  // APPROVE EMPLOYEE
+  // ==========================================================
+  const handleApprove = async (employeeId: string) => {
+    try {
+      setActionLoading(employeeId);
+      const { error } = await supabase.rpc('approve_registration', {
+        p_employee_id: employeeId
+      });
+
+      if (error) throw error;
+
+      toast({
+        title: 'Inscription validée',
+        description: 'Le compte a été activé avec succès.',
+      });
+
+      setPendingEmployees((current) => current.filter((e) => e.id !== employeeId));
+      
+      // Update statistics
+      setStats((prev) => ({
+        ...prev,
+        totalEmployees: prev.totalEmployees + 1,
+        absentToday: prev.absentToday + 1,
+      }));
+
+    } catch (err: any) {
+      console.error('Erreur validation:', err);
+      toast({
+        title: 'Erreur',
+        description: err.message || 'Impossible de valider l\'inscription',
+        variant: 'destructive',
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const statCards = [
+
 
     {
       label: 'Total Employés',
@@ -576,13 +627,13 @@ export default function DashboardManager() {
                   "
                   style={{
                     width: `${stats.totalEmployees > 0
-                        ? Math.min(
-                          (stats.presentToday /
-                            stats.totalEmployees) *
-                          100,
-                          100
-                        )
-                        : 0
+                      ? Math.min(
+                        (stats.presentToday /
+                          stats.totalEmployees) *
+                        100,
+                        100
+                      )
+                      : 0
                       }%`,
                   }}
                 />

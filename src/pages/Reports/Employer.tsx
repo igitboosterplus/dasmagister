@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useState } from 'react'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useAuth } from '@/hooks/useAuth'
+import { useToast } from '@/hooks/use-toast'
 import { supabase } from '@/integrations/supabase/client'
 
 import {
@@ -35,6 +36,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+
 import {
   Select,
   SelectContent,
@@ -44,7 +46,10 @@ import {
 } from '@/components/ui/select'
 
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardContent,
+} from '@/components/ui/card'
 
 const REPORT_BUCKET = 'reports'
 
@@ -71,14 +76,6 @@ interface Attachment {
   mime_type: string | null
   file_size: number | null
   created_at: string
-}
-
-interface Employee {
-  id: string
-  first_name: string
-  last_name: string
-  structure_id: string | null
-  site_id: string | null
 }
 
 interface Report {
@@ -131,66 +128,94 @@ const STATUS_CLASSES: Record<ReportStatus, string> = {
   rejected: 'bg-red-50 text-red-700 border-red-200',
 }
 
-function formatDate(value: string | null | undefined) {
+function formatDate(value: string | null | undefined): string {
   if (!value) return '—'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return '—'
+  }
 
   return new Intl.DateTimeFormat('fr-FR', {
     dateStyle: 'medium',
     timeStyle: 'short',
-  }).format(new Date(value))
+  }).format(date)
 }
 
-function formatFileSize(size: number | null) {
-  if (!size) return '—'
+function formatFileSize(size: number | null | undefined): string {
+  if (size == null || size === 0) {
+    return '—'
+  }
 
-  if (size < 1024) return `${size} o`
+  if (size < 1024) {
+    return `${size} o`
+  }
+
   if (size < 1024 * 1024) {
     return `${(size / 1024).toFixed(1)} Ko`
   }
 
-  return `${(size / (1024 * 1024)).toFixed(1)} Mo`
+  if (size < 1024 * 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} Mo`
+  }
+
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} Go`
 }
 
-function isImage(file: { mime_type?: string | null; file_name?: string }) {
-  const mime = file.mime_type?.toLowerCase() || ''
-  const name = file.file_name?.toLowerCase() || ''
+function isImage(
+  file: Pick<Attachment, 'mime_type' | 'file_name'>,
+): boolean {
+  const mime = file.mime_type?.toLowerCase() ?? ''
+  const name = file.file_name?.toLowerCase() ?? ''
 
   return (
     mime.startsWith('image/') ||
-    /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(name)
+    /\.(jpg|jpeg|png|gif|webp|svg|bmp|avif)$/i.test(name)
   )
 }
 
-function isPdf(file: { mime_type?: string | null; file_name?: string }) {
-  const mime = file.mime_type?.toLowerCase() || ''
-  const name = file.file_name?.toLowerCase() || ''
+function isPdf(
+  file: Pick<Attachment, 'mime_type' | 'file_name'>,
+): boolean {
+  const mime = file.mime_type?.toLowerCase() ?? ''
+  const name = file.file_name?.toLowerCase() ?? ''
 
-  return mime === 'application/pdf' || /\.pdf$/i.test(name)
+  return (
+    mime === 'application/pdf' ||
+    /\.pdf$/i.test(name)
+  )
 }
 
 function getFileIcon(file: Attachment | File) {
   const mime =
-    'type' in file
-      ? file.type
-      : file.mime_type || ''
+    'mime_type' in file
+      ? file.mime_type?.toLowerCase() ?? ''
+      : file.type?.toLowerCase() ?? ''
 
-  const name = file.name || file.file_name || ''
+  const name =
+    'file_name' in file
+      ? file.file_name?.toLowerCase() ?? ''
+      : file.name?.toLowerCase() ?? ''
 
   if (
     mime.startsWith('image/') ||
-    /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(name)
+    /\.(jpg|jpeg|png|gif|webp|svg|bmp|avif)$/i.test(name)
   ) {
     return FileImage
   }
 
-  if (mime === 'application/pdf' || /\.pdf$/i.test(name)) {
+  if (
+    mime === 'application/pdf' ||
+    /\.pdf$/i.test(name)
+  ) {
     return FileText
   }
 
   return File
 }
-
 export default function EmployerReports() {
+  const { toast } = useToast()
   const { profile } = useAuth()
 
   const [reports, setReports] = useState<Report[]>([])
@@ -208,40 +233,87 @@ export default function EmployerReports() {
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false)
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false)
 
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null)
+  const [selectedReport, setSelectedReport] =
+    useState<Report | null>(null)
 
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [previewUrl, setPreviewUrl] =
+    useState<string | null>(null)
+
   const [previewAttachment, setPreviewAttachment] =
     useState<Attachment | null>(null)
 
-  const [newReport, setNewReport] = useState<NewReportState>({
-    title: '',
-    description: '',
-    typeId: '',
-    files: [],
-  })
+  const [newReport, setNewReport] =
+    useState<NewReportState>({
+      title: '',
+      description: '',
+      typeId: '',
+      files: [],
+    })
 
+  /**
+   * ============================================================
+   * CHARGEMENT DES TYPES DE RAPPORT
+   * ============================================================
+   */
   const loadReportTypes = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('report_types')
-      .select('id, name')
-      .order('name')
+    try {
+      const { data, error } = await supabase
+        .from('report_types')
+        .select('id, name')
+        .order('name', {
+          ascending: true,
+        })
 
-    if (error) {
-      console.error(error)
+      if (error) {
+        throw error
+      }
+
+      setReportTypes(
+        (data ?? []) as ReportType[],
+      )
+    } catch (error) {
+      console.error(
+        'Erreur chargement types de rapports:',
+        error,
+      )
+
+      toast({
+        title: 'Erreur',
+        description:
+          'Impossible de charger les types de rapports.',
+        variant: 'destructive',
+      })
+    }
+  }, [toast])
+
+  /**
+   * ============================================================
+   * CHARGEMENT DES RAPPORTS DE L'EMPLOYÉ CONNECTÉ
+   *
+   * IMPORTANT :
+   * On utilise employee_id ET author_employee_id.
+   *
+   * Cela permet de récupérer :
+   * - les rapports créés par l'employé ;
+   * - les rapports dont il est l'auteur ;
+   *
+   * sans dépendre de recipient_id.
+   * ============================================================
+   */
+  const loadReports = useCallback(async () => {
+    if (!profile?.id) {
+      setReports([])
+      setLoading(false)
       return
     }
-
-    setReportTypes(data || [])
-  }, [])
-
-  const loadReports = useCallback(async () => {
-    if (!profile?.id) return
 
     setLoading(true)
 
     try {
-      const { data, error } = await supabase
+      const {
+        data,
+        error,
+      } = await supabase
         .from('reports')
         .select(`
           id,
@@ -280,68 +352,169 @@ export default function EmployerReports() {
         .or(
           `employee_id.eq.${profile.id},author_employee_id.eq.${profile.id}`,
         )
-        .order('submitted_at', { ascending: false })
+        .order(
+          'submitted_at',
+          {
+            ascending: false,
+            nullsFirst: false,
+          },
+        )
 
-      if (error) throw error
+      if (error) {
+        throw error
+      }
 
-      setReports((data || []) as unknown as Report[])
+      const normalizedReports: Report[] =
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (data ?? []).map((item: any) => ({
+          ...item,
+          report_types:
+            Array.isArray(item.report_types)
+              ? item.report_types[0] ?? null
+              : item.report_types ?? null,
+          attachments:
+            Array.isArray(item.attachments)
+              ? item.attachments
+              : [],
+        }))
+
+      setReports(normalizedReports)
     } catch (error) {
-      console.error('Erreur chargement rapports:', error)
+      console.error(
+        'Erreur chargement rapports:',
+        error,
+      )
+
+      setReports([])
+
+      toast({
+        title: 'Erreur',
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Impossible de charger vos rapports.',
+        variant: 'destructive',
+      })
     } finally {
       setLoading(false)
     }
-  }, [profile?.id])
+  }, [profile?.id, toast])
 
+  /**
+   * ============================================================
+   * INITIALISATION
+   * ============================================================
+   */
   useEffect(() => {
-    loadReportTypes()
-    loadReports()
+    void loadReportTypes()
+    void loadReports()
   }, [loadReportTypes, loadReports])
 
+  /**
+   * ============================================================
+   * FILTRAGE
+   * ============================================================
+   */
   const filteredReports = useMemo(() => {
     const query = search.trim().toLowerCase()
 
     return reports.filter((report) => {
       const matchesStatus =
-        statusFilter === 'all' || report.status === statusFilter
+        statusFilter === 'all' ||
+        report.status === statusFilter
 
       const matchesType =
-        typeFilter === 'all' || report.report_type_id === typeFilter
+        typeFilter === 'all' ||
+        report.report_type_id === typeFilter
 
       const matchesSearch =
         !query ||
         report.title.toLowerCase().includes(query) ||
-        report.description?.toLowerCase().includes(query) ||
-        report.report_types?.name.toLowerCase().includes(query)
+        report.description
+          ?.toLowerCase()
+          .includes(query) ||
+        report.report_types?.name
+          ?.toLowerCase()
+          .includes(query)
 
-      return matchesStatus && matchesType && matchesSearch
+      return (
+        matchesStatus &&
+        matchesType &&
+        matchesSearch
+      )
     })
-  }, [reports, search, statusFilter, typeFilter])
+  }, [
+    reports,
+    search,
+    statusFilter,
+    typeFilter,
+  ])
 
+  /**
+   * ============================================================
+   * STATISTIQUES
+   * ============================================================
+   */
   const stats = useMemo(() => {
     return {
       total: reports.length,
-      submitted: reports.filter((r) => r.status === 'submitted').length,
-      received: reports.filter((r) => r.status === 'received').length,
-      reviewed: reports.filter((r) => r.status === 'reviewed').length,
-      rejected: reports.filter((r) => r.status === 'rejected').length,
+
+      submitted: reports.filter(
+        (report) =>
+          report.status === 'submitted',
+      ).length,
+
+      received: reports.filter(
+        (report) =>
+          report.status === 'received',
+      ).length,
+
+      reviewed: reports.filter(
+        (report) =>
+          report.status === 'reviewed',
+      ).length,
+
+      rejected: reports.filter(
+        (report) =>
+          report.status === 'rejected',
+      ).length,
     }
   }, [reports])
 
-  const handleFiles = (files: FileList | null) => {
-    if (!files) return
+  /**
+   * ============================================================
+   * FICHIERS
+   * ============================================================
+   */
+  const handleFiles = (
+    fileList: FileList | null,
+  ) => {
+    if (!fileList) {
+      return
+    }
 
-    const selected = Array.from(files)
+    const selectedFiles = Array.from(fileList)
+
+    if (selectedFiles.length === 0) {
+      return
+    }
 
     setNewReport((current) => ({
       ...current,
-      files: [...current.files, ...selected],
+      files: [
+        ...current.files,
+        ...selectedFiles,
+      ],
     }))
   }
 
   const removeFile = (index: number) => {
     setNewReport((current) => ({
       ...current,
-      files: current.files.filter((_, i) => i !== index),
+      files: current.files.filter(
+        (_, currentIndex) =>
+          currentIndex !== index,
+      ),
     }))
   }
 
@@ -354,93 +527,136 @@ export default function EmployerReports() {
     })
   }
 
+  /**
+   * ============================================================
+   * CRÉATION DU RAPPORT
+   *
+   * La logique de destinataire reste dans la RPC
+   * submit_report.
+   *
+   * Le frontend ne remplit PAS recipient_id directement.
+   * ============================================================
+   */
   const handleSubmit = async () => {
     if (!profile?.id) {
-      alert('Utilisateur non authentifié.')
+      toast({
+        title: 'Erreur',
+        description:
+          'Utilisateur non authentifié.',
+        variant: 'destructive',
+      })
+
       return
     }
 
     if (!profile.structure_id) {
-      alert('Votre compte n’est associé à aucune structure.')
+      toast({
+        title: 'Information',
+        description:
+          'Votre compte n’est associé à aucune structure.',
+      })
+
       return
     }
 
     if (!newReport.typeId) {
-      alert('Veuillez sélectionner un type de rapport.')
+      toast({
+        title: 'Information',
+        description:
+          'Veuillez sélectionner un type de rapport.',
+      })
+
       return
     }
 
-    if (!newReport.title.trim()) {
-      alert('Veuillez renseigner le titre du rapport.')
+    const title = newReport.title.trim()
+
+    if (!title) {
+      toast({
+        title: 'Information',
+        description:
+          'Veuillez renseigner le titre du rapport.',
+      })
+
       return
     }
 
     setSubmitting(true)
 
     const uploadedPaths: string[] = []
+    let createdReportId: string | null = null
 
     try {
-      /*
-       * Le site est directement récupéré depuis le profil.
-       * Cela permet maintenant de renseigner correctement site_id.
+      /**
+       * Création du rapport.
+       *
+       * La RPC doit être responsable de déterminer
+       * le destinataire selon les règles métier.
        */
-      const siteId = profile.site_id || null
+      const {
+        data: reportId,
+        error: reportError,
+      } = await supabase.rpc(
+        'submit_report',
+        {
+          p_report_type_id:
+            newReport.typeId,
 
-      const { data: manager, error: managerError } = await supabase.rpc(
-        'get_current_structure_manager',
+          p_title: title,
+
+          p_description:
+            newReport.description.trim() ||
+            null,
+        },
       )
 
-      if (managerError) {
-        throw managerError
+      if (reportError) {
+        throw reportError
       }
 
-      const recipientId =
-        Array.isArray(manager) ? manager[0]?.id : manager?.id
-
-      const { data: createdReport, error: reportError } = await supabase
-        .from('reports')
-        .insert({
-          employee_id: profile.id,
-          author_employee_id: profile.id,
-          report_type_id: newReport.typeId,
-          title: newReport.title.trim(),
-          description: newReport.description.trim() || null,
-          file_url: null,
-          submitted_at: new Date().toISOString(),
-          structure_id: profile.structure_id,
-          site_id: siteId,
-          recipient_id: recipientId || null,
-          recipient_employee_id: recipientId || null,
-          status: 'submitted',
-        })
-        .select('id')
-        .single()
-
-      if (reportError) throw reportError
-
-      if (!createdReport?.id) {
-        throw new Error('Le rapport n’a pas pu être créé.')
+      if (!reportId) {
+        throw new Error(
+          'Le rapport n’a pas pu être créé.',
+        )
       }
 
+      createdReportId =
+        reportId as string
+
+      /**
+       * Upload des pièces jointes.
+       */
       for (const file of newReport.files) {
         const extension =
           file.name.includes('.')
-            ? file.name.split('.').pop()
+            ? file.name
+              .split('.')
+              .pop()
+              ?.toLowerCase() || 'bin'
             : 'bin'
 
         const path = [
           profile.structure_id,
           profile.id,
-          createdReport.id,
+          createdReportId,
           `${crypto.randomUUID()}.${extension}`,
         ].join('/')
 
-        const { error: uploadError } = await supabase.storage
+        const {
+          error: uploadError,
+        } = await supabase.storage
           .from(REPORT_BUCKET)
-          .upload(path, file, {
-            contentType: file.type || 'application/octet-stream',
-            upsert: false,
-          })
+          .upload(
+            path,
+            file,
+            {
+              contentType:
+                file.type ||
+                'application/octet-stream',
+
+              upsert: false,
+            },
+          )
 
         if (uploadError) {
           throw uploadError
@@ -448,15 +664,28 @@ export default function EmployerReports() {
 
         uploadedPaths.push(path)
 
-        const { error: attachmentError } = await supabase
+        const {
+          error: attachmentError,
+        } = await supabase
           .from('report_attachments')
           .insert({
-            report_id: createdReport.id,
-            file_name: file.name,
-            file_path: path,
-            file_url: null,
-            mime_type: file.type || null,
-            file_size: file.size,
+            report_id:
+              createdReportId,
+
+            file_name:
+              file.name,
+
+            file_path:
+              path,
+
+            file_url:
+              null,
+
+            mime_type:
+              file.type || null,
+
+            file_size:
+              file.size,
           })
 
         if (attachmentError) {
@@ -469,80 +698,224 @@ export default function EmployerReports() {
 
       await loadReports()
 
-      alert('Votre rapport a été transmis avec succès.')
+      toast({
+        title: 'Rapport transmis',
+        description:
+          'Votre rapport a été transmis avec succès.',
+      })
     } catch (error) {
-      console.error('Erreur création rapport:', error)
+      console.error(
+        'Erreur création rapport:',
+        error,
+      )
 
+      /**
+       * Nettoyage des fichiers déjà uploadés
+       * en cas d'erreur.
+       */
       if (uploadedPaths.length > 0) {
-        await supabase.storage
+        const {
+          error: cleanupError,
+        } = await supabase.storage
           .from(REPORT_BUCKET)
           .remove(uploadedPaths)
+
+        if (cleanupError) {
+          console.error(
+            'Erreur nettoyage fichiers:',
+            cleanupError,
+          )
+        }
       }
 
-      alert(
-        error instanceof Error
-          ? error.message
-          : 'Impossible de transmettre le rapport.',
-      )
+      toast({
+        title: 'Erreur',
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Impossible de transmettre le rapport.',
+        variant: 'destructive',
+      })
     } finally {
       setSubmitting(false)
     }
   }
 
-  const getSignedUrl = async (path: string) => {
-    const { data, error } = await supabase.storage
-      .from(REPORT_BUCKET)
-      .createSignedUrl(path, 600)
+  /**
+   * ============================================================
+   * SIGNED URL
+   * ============================================================
+   */
+  const getSignedUrl = async (
+    path: string,
+  ): Promise<string> => {
+    if (!path) {
+      throw new Error(
+        'Chemin du fichier invalide.',
+      )
+    }
 
-    if (error) throw error
+    const {
+      data,
+      error,
+    } = await supabase.storage
+      .from(REPORT_BUCKET)
+      .createSignedUrl(
+        path,
+        600,
+      )
+
+    if (error) {
+      throw error
+    }
+
+    if (!data?.signedUrl) {
+      throw new Error(
+        'URL sécurisée introuvable.',
+      )
+    }
 
     return data.signedUrl
   }
 
-  const previewFile = async (attachment: Attachment) => {
+  /**
+   * ============================================================
+   * APERÇU
+   * ============================================================
+   */
+  const previewFile = async (
+    attachment: Attachment,
+  ) => {
     try {
-      const url = await getSignedUrl(attachment.file_path)
+      if (
+        !isImage(attachment) &&
+        !isPdf(attachment)
+      ) {
+        toast({
+          title: 'Aperçu indisponible',
+          description:
+            'Ce type de fichier ne peut pas être prévisualisé.',
+        })
 
-      setPreviewAttachment(attachment)
+        return
+      }
+
+      const url =
+        await getSignedUrl(
+          attachment.file_path,
+        )
+
+      setPreviewAttachment(
+        attachment,
+      )
+
       setPreviewUrl(url)
       setPreviewDialogOpen(true)
     } catch (error) {
-      console.error(error)
-      alert('Impossible d’ouvrir cette pièce jointe.')
+      console.error(
+        'Erreur aperçu fichier:',
+        error,
+      )
+
+      toast({
+        title: 'Erreur',
+        description:
+          'Impossible d’ouvrir cette pièce jointe.',
+        variant: 'destructive',
+      })
     }
   }
 
-  const downloadFile = async (attachment: Attachment) => {
+  /**
+   * ============================================================
+   * TÉLÉCHARGEMENT
+   * ============================================================
+   */
+  const downloadFile = async (
+    attachment: Attachment,
+  ) => {
     try {
-      setDownloading(attachment.id)
+      setDownloading(
+        attachment.id,
+      )
 
-      const url = await getSignedUrl(attachment.file_path)
+      const url =
+        await getSignedUrl(
+          attachment.file_path,
+        )
 
-      const response = await fetch(url)
+      const response =
+        await fetch(url)
 
       if (!response.ok) {
-        throw new Error('Téléchargement impossible.')
+        throw new Error(
+          'Téléchargement impossible.',
+        )
       }
 
-      const blob = await response.blob()
-      const objectUrl = URL.createObjectURL(blob)
+      const blob =
+        await response.blob()
 
-      const anchor = document.createElement('a')
+      const objectUrl =
+        URL.createObjectURL(blob)
+
+      const anchor =
+        document.createElement('a')
+
       anchor.href = objectUrl
-      anchor.download = attachment.file_name
-      document.body.appendChild(anchor)
+      anchor.download =
+        attachment.file_name
+
+      document.body.appendChild(
+        anchor,
+      )
+
       anchor.click()
       anchor.remove()
 
-      URL.revokeObjectURL(objectUrl)
+      window.setTimeout(() => {
+        URL.revokeObjectURL(
+          objectUrl,
+        )
+      }, 1000)
     } catch (error) {
-      console.error(error)
-      alert('Impossible de télécharger le fichier.')
+      console.error(
+        'Erreur téléchargement:',
+        error,
+      )
+
+      toast({
+        title: 'Erreur',
+        description:
+          'Impossible de télécharger le fichier.',
+        variant: 'destructive',
+      })
     } finally {
       setDownloading(null)
     }
   }
 
+  /**
+   * ============================================================
+   * FERMETURE APERÇU
+   * ============================================================
+   */
+  const handlePreviewDialogChange = (
+    open: boolean,
+  ) => {
+    setPreviewDialogOpen(open)
+
+    if (!open) {
+      setPreviewUrl(null)
+      setPreviewAttachment(null)
+    }
+  }
+
+  /**
+   * ============================================================
+   * RENDER
+   * ============================================================
+   */
   return (
     <DashboardLayout>
       <div className="space-y-6 p-4 md:p-6 lg:p-8">
@@ -564,7 +937,9 @@ export default function EmployerReports() {
           </div>
 
           <Button
-            onClick={() => setNewDialogOpen(true)}
+            onClick={() =>
+              setNewDialogOpen(true)
+            }
             className="gap-2"
           >
             <Plus className="h-4 w-4" />
@@ -581,6 +956,7 @@ export default function EmployerReports() {
                   <p className="text-sm text-muted-foreground">
                     Total
                   </p>
+
                   <p className="mt-1 text-2xl font-bold">
                     {stats.total}
                   </p>
@@ -600,6 +976,7 @@ export default function EmployerReports() {
                   <p className="text-sm text-muted-foreground">
                     En attente
                   </p>
+
                   <p className="mt-1 text-2xl font-bold">
                     {stats.submitted}
                   </p>
@@ -619,6 +996,7 @@ export default function EmployerReports() {
                   <p className="text-sm text-muted-foreground">
                     Reçus
                   </p>
+
                   <p className="mt-1 text-2xl font-bold">
                     {stats.received}
                   </p>
@@ -638,6 +1016,7 @@ export default function EmployerReports() {
                   <p className="text-sm text-muted-foreground">
                     Examinés
                   </p>
+
                   <p className="mt-1 text-2xl font-bold">
                     {stats.reviewed}
                   </p>
@@ -660,7 +1039,11 @@ export default function EmployerReports() {
 
                 <Input
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(event) =>
+                    setSearch(
+                      event.target.value,
+                    )
+                  }
                   placeholder="Rechercher un rapport..."
                   className="pl-9"
                 />
@@ -669,19 +1052,32 @@ export default function EmployerReports() {
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Select
                   value={statusFilter}
-                  onValueChange={setStatusFilter}
+                  onValueChange={
+                    setStatusFilter
+                  }
                 >
                   <SelectTrigger className="w-full sm:w-[180px]">
                     <Filter className="mr-2 h-4 w-4" />
+
                     <SelectValue placeholder="Statut" />
                   </SelectTrigger>
 
                   <SelectContent>
-                    <SelectItem value="all">Tous les statuts</SelectItem>
+                    <SelectItem value="all">
+                      Tous les statuts
+                    </SelectItem>
 
-                    {Object.entries(STATUS_LABELS).map(
-                      ([value, label]) => (
-                        <SelectItem key={value} value={value}>
+                    {Object.entries(
+                      STATUS_LABELS,
+                    ).map(
+                      ([
+                        value,
+                        label,
+                      ]) => (
+                        <SelectItem
+                          key={value}
+                          value={value}
+                        >
                           {label}
                         </SelectItem>
                       ),
@@ -691,7 +1087,9 @@ export default function EmployerReports() {
 
                 <Select
                   value={typeFilter}
-                  onValueChange={setTypeFilter}
+                  onValueChange={
+                    setTypeFilter
+                  }
                 >
                   <SelectTrigger className="w-full sm:w-[200px]">
                     <SelectValue placeholder="Type" />
@@ -702,11 +1100,16 @@ export default function EmployerReports() {
                       Tous les types
                     </SelectItem>
 
-                    {reportTypes.map((type) => (
-                      <SelectItem key={type.id} value={type.id}>
-                        {type.name}
-                      </SelectItem>
-                    ))}
+                    {reportTypes.map(
+                      (type) => (
+                        <SelectItem
+                          key={type.id}
+                          value={type.id}
+                        >
+                          {type.name}
+                        </SelectItem>
+                      ),
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -737,7 +1140,9 @@ export default function EmployerReports() {
 
               <Button
                 className="mt-5 gap-2"
-                onClick={() => setNewDialogOpen(true)}
+                onClick={() =>
+                  setNewDialogOpen(true)
+                }
               >
                 <Plus className="h-4 w-4" />
                 Créer un rapport
@@ -746,78 +1151,120 @@ export default function EmployerReports() {
           </Card>
         ) : (
           <div className="space-y-3">
-            {filteredReports.map((report) => (
-              <Card
-                key={report.id}
-                className="transition-shadow hover:shadow-md"
-              >
-                <CardContent className="p-5">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="truncate font-semibold">
-                          {report.title}
-                        </h3>
+            {filteredReports.map(
+              (report) => (
+                <Card
+                  key={report.id}
+                  className="transition-shadow hover:shadow-md"
+                >
+                  <CardContent className="p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate font-semibold">
+                            {report.title}
+                          </h3>
 
-                        <Badge
-                          variant="outline"
-                          className={
-                            STATUS_CLASSES[report.status]
-                          }
-                        >
-                          {STATUS_LABELS[report.status]}
-                        </Badge>
-                      </div>
+                          <Badge
+                            variant="outline"
+                            className={
+                              STATUS_CLASSES[
+                              report.status
+                              ]
+                            }
+                          >
+                            {
+                              STATUS_LABELS[
+                              report.status
+                              ]
+                            }
+                          </Badge>
+                        </div>
 
-                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        <span>
-                          {report.report_types?.name || 'Type non défini'}
-                        </span>
-
-                        <span className="flex items-center gap-1">
-                          <Calendar className="h-3.5 w-3.5" />
-                          {formatDate(report.submitted_at)}
-                        </span>
-
-                        {report.attachments?.length > 0 && (
-                          <span className="flex items-center gap-1">
-                            <File className="h-3.5 w-3.5" />
-                            {report.attachments.length} pièce(s)
+                        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                          <span>
+                            {report.report_types?.name ||
+                              'Type non défini'}
                           </span>
+
+                          <span className="flex items-center gap-1">
+                            <Calendar className="h-3.5 w-3.5" />
+
+                            {formatDate(
+                              report.submitted_at,
+                            )}
+                          </span>
+
+                          {report.attachments.length >
+                            0 && (
+                              <span className="flex items-center gap-1">
+                                <File className="h-3.5 w-3.5" />
+
+                                {
+                                  report
+                                    .attachments
+                                    .length
+                                }{' '}
+                                pièce(s)
+                              </span>
+                            )}
+                        </div>
+
+                        {report.description && (
+                          <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">
+                            {
+                              report.description
+                            }
+                          </p>
                         )}
                       </div>
 
-                      {report.description && (
-                        <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">
-                          {report.description}
-                        </p>
-                      )}
-                    </div>
+                      <Button
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => {
+                          setSelectedReport(
+                            report,
+                          )
 
-                    <Button
-                      variant="outline"
-                      className="gap-2"
-                      onClick={() => {
-                        setSelectedReport(report)
-                        setDetailsDialogOpen(true)
-                      }}
-                    >
-                      Consulter
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                          setDetailsDialogOpen(
+                            true,
+                          )
+                        }}
+                      >
+                        Consulter
+
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ),
+            )}
           </div>
         )}
       </div>
 
-      {/* CREATE DIALOG */}
-      <Dialog open={newDialogOpen} onOpenChange={setNewDialogOpen}>
+      {/* ========================================================
+          CREATE DIALOG
+          ======================================================== */}
+      <Dialog
+        open={newDialogOpen}
+        onOpenChange={(open) => {
+          if (!submitting) {
+            setNewDialogOpen(open)
+
+            if (!open) {
+              resetNewReport()
+            }
+          }
+        }}
+      >
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Nouveau rapport</DialogTitle>
+            <DialogTitle>
+              Nouveau rapport
+            </DialogTitle>
 
             <DialogDescription>
               Votre rapport sera transmis automatiquement au responsable
@@ -826,6 +1273,7 @@ export default function EmployerReports() {
           </DialogHeader>
 
           <div className="space-y-5 py-2">
+            {/* TYPE */}
             <div className="grid gap-2">
               <label className="text-sm font-medium">
                 Type de rapport
@@ -834,10 +1282,12 @@ export default function EmployerReports() {
               <Select
                 value={newReport.typeId}
                 onValueChange={(value) =>
-                  setNewReport((current) => ({
-                    ...current,
-                    typeId: value,
-                  }))
+                  setNewReport(
+                    (current) => ({
+                      ...current,
+                      typeId: value,
+                    }),
+                  )
                 }
               >
                 <SelectTrigger>
@@ -845,15 +1295,21 @@ export default function EmployerReports() {
                 </SelectTrigger>
 
                 <SelectContent>
-                  {reportTypes.map((type) => (
-                    <SelectItem key={type.id} value={type.id}>
-                      {type.name}
-                    </SelectItem>
-                  ))}
+                  {reportTypes.map(
+                    (type) => (
+                      <SelectItem
+                        key={type.id}
+                        value={type.id}
+                      >
+                        {type.name}
+                      </SelectItem>
+                    ),
+                  )}
                 </SelectContent>
               </Select>
             </div>
 
+            {/* TITLE */}
             <div className="grid gap-2">
               <label className="text-sm font-medium">
                 Titre
@@ -861,34 +1317,46 @@ export default function EmployerReports() {
 
               <Input
                 value={newReport.title}
-                onChange={(e) =>
-                  setNewReport((current) => ({
-                    ...current,
-                    title: e.target.value,
-                  }))
+                onChange={(event) =>
+                  setNewReport(
+                    (current) => ({
+                      ...current,
+                      title:
+                        event.target
+                          .value,
+                    }),
+                  )
                 }
                 placeholder="Ex. Rapport d'activité du 24 septembre"
               />
             </div>
 
+            {/* DESCRIPTION */}
             <div className="grid gap-2">
               <label className="text-sm font-medium">
                 Description
               </label>
 
               <Textarea
-                value={newReport.description}
-                onChange={(e) =>
-                  setNewReport((current) => ({
-                    ...current,
-                    description: e.target.value,
-                  }))
+                value={
+                  newReport.description
+                }
+                onChange={(event) =>
+                  setNewReport(
+                    (current) => ({
+                      ...current,
+                      description:
+                        event.target
+                          .value,
+                    }),
+                  )
                 }
                 placeholder="Décrivez le contenu de votre rapport..."
                 className="min-h-[150px]"
               />
             </div>
 
+            {/* ATTACHMENTS */}
             <div className="rounded-xl border border-dashed p-5">
               <div className="flex flex-col items-center justify-center text-center">
                 <div className="rounded-full bg-muted p-3">
@@ -904,66 +1372,100 @@ export default function EmployerReports() {
                 </p>
 
                 <label className="mt-4 cursor-pointer">
-                  <Button type="button" variant="outline" asChild>
-                    <span>Choisir des fichiers</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    asChild
+                  >
+                    <span>
+                      Choisir des fichiers
+                    </span>
                   </Button>
 
                   <input
                     type="file"
                     multiple
                     className="hidden"
-                    onChange={(e) => handleFiles(e.target.files)}
+                    onChange={(event) => {
+                      handleFiles(
+                        event.target
+                          .files,
+                      )
+
+                      event.target.value =
+                        ''
+                    }}
                   />
                 </label>
               </div>
 
-              {newReport.files.length > 0 && (
-                <div className="mt-5 space-y-2">
-                  {newReport.files.map((file, index) => {
-                    const Icon = getFileIcon(file)
+              {newReport.files.length >
+                0 && (
+                  <div className="mt-5 space-y-2">
+                    {newReport.files.map(
+                      (
+                        file,
+                        index,
+                      ) => {
+                        const Icon =
+                          getFileIcon(
+                            file,
+                          )
 
-                    return (
-                      <div
-                        key={`${file.name}-${index}`}
-                        className="flex items-center gap-3 rounded-lg bg-muted/50 p-3"
-                      >
-                        <Icon className="h-5 w-5 shrink-0" />
+                        return (
+                          <div
+                            key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                            className="flex items-center gap-3 rounded-lg bg-muted/50 p-3"
+                          >
+                            <Icon className="h-5 w-5 shrink-0" />
 
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">
-                            {file.name}
-                          </p>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">
+                                {file.name}
+                              </p>
 
-                          <p className="text-xs text-muted-foreground">
-                            {formatFileSize(file.size)}
-                          </p>
-                        </div>
+                              <p className="text-xs text-muted-foreground">
+                                {formatFileSize(
+                                  file.size,
+                                )}
+                              </p>
+                            </div>
 
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => removeFile(index)}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              onClick={() =>
+                                removeFile(
+                                  index,
+                                )
+                              }
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )
+                      },
+                    )}
+                  </div>
+                )}
             </div>
           </div>
 
           <DialogFooter>
             <Button
+              type="button"
               variant="outline"
-              onClick={() => setNewDialogOpen(false)}
+              onClick={() =>
+                setNewDialogOpen(false)
+              }
               disabled={submitting}
             >
               Annuler
             </Button>
 
             <Button
+              type="button"
               onClick={handleSubmit}
               disabled={submitting}
               className="gap-2"
@@ -980,7 +1482,9 @@ export default function EmployerReports() {
         </DialogContent>
       </Dialog>
 
-      {/* DETAILS */}
+      {/* ========================================================
+          DETAILS
+          ======================================================== */}
       <Dialog
         open={detailsDialogOpen}
         onOpenChange={setDetailsDialogOpen}
@@ -990,22 +1494,38 @@ export default function EmployerReports() {
             <>
               <DialogHeader>
                 <div className="flex flex-wrap items-center gap-2">
-                  <DialogTitle>{selectedReport.title}</DialogTitle>
+                  <DialogTitle>
+                    {
+                      selectedReport.title
+                    }
+                  </DialogTitle>
 
                   <Badge
                     variant="outline"
                     className={
-                      STATUS_CLASSES[selectedReport.status]
+                      STATUS_CLASSES[
+                      selectedReport
+                        .status
+                      ]
                     }
                   >
-                    {STATUS_LABELS[selectedReport.status]}
+                    {
+                      STATUS_LABELS[
+                      selectedReport
+                        .status
+                      ]
+                    }
                   </Badge>
                 </div>
 
                 <DialogDescription>
-                  {selectedReport.report_types?.name ||
+                  {selectedReport.report_types
+                    ?.name ||
                     'Type non défini'}{' '}
-                  · {formatDate(selectedReport.submitted_at)}
+                  ·{' '}
+                  {formatDate(
+                    selectedReport.submitted_at,
+                  )}
                 </DialogDescription>
               </DialogHeader>
 
@@ -1017,106 +1537,151 @@ export default function EmployerReports() {
                   </p>
                 </div>
 
-                {selectedReport.attachments?.length > 0 && (
-                  <div>
-                    <h3 className="mb-3 text-sm font-semibold">
-                      Pièces jointes
-                    </h3>
+                {selectedReport.attachments
+                  .length > 0 && (
+                    <div>
+                      <h3 className="mb-3 text-sm font-semibold">
+                        Pièces jointes
+                      </h3>
 
-                    <div className="space-y-2">
-                      {selectedReport.attachments.map((attachment) => {
-                        const Icon = getFileIcon(attachment)
+                      <div className="space-y-2">
+                        {selectedReport.attachments.map(
+                          (
+                            attachment,
+                          ) => {
+                            const Icon =
+                              getFileIcon(
+                                attachment,
+                              )
 
-                        return (
-                          <div
-                            key={attachment.id}
-                            className="flex items-center gap-3 rounded-xl border p-3"
-                          >
-                            <Icon className="h-5 w-5 shrink-0" />
-
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-medium">
-                                {attachment.file_name}
-                              </p>
-
-                              <p className="text-xs text-muted-foreground">
-                                {formatFileSize(
-                                  attachment.file_size,
-                                )}
-                              </p>
-                            </div>
-
-                            <div className="flex gap-1">
-                              {(isImage(attachment) ||
-                                isPdf(attachment)) && (
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  onClick={() =>
-                                    previewFile(attachment)
-                                  }
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </Button>
-                              )}
-
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                onClick={() =>
-                                  downloadFile(attachment)
+                            return (
+                              <div
+                                key={
+                                  attachment.id
                                 }
-                                disabled={
-                                  downloading === attachment.id
-                                }
+                                className="flex items-center gap-3 rounded-xl border p-3"
                               >
-                                {downloading === attachment.id ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <Download className="h-4 w-4" />
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                        )
-                      })}
+                                <Icon className="h-5 w-5 shrink-0" />
+
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-medium">
+                                    {
+                                      attachment.file_name
+                                    }
+                                  </p>
+
+                                  <p className="text-xs text-muted-foreground">
+                                    {formatFileSize(
+                                      attachment.file_size,
+                                    )}
+                                  </p>
+                                </div>
+
+                                <div className="flex gap-1">
+                                  {(
+                                    isImage(
+                                      attachment,
+                                    ) ||
+                                    isPdf(
+                                      attachment,
+                                    )
+                                  ) && (
+                                      <Button
+                                        type="button"
+                                        size="icon"
+                                        variant="ghost"
+                                        onClick={() =>
+                                          previewFile(
+                                            attachment,
+                                          )
+                                        }
+                                      >
+                                        <Eye className="h-4 w-4" />
+                                      </Button>
+                                    )}
+
+                                  <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      downloadFile(
+                                        attachment,
+                                      )
+                                    }
+                                    disabled={
+                                      downloading ===
+                                      attachment.id
+                                    }
+                                  >
+                                    {downloading ===
+                                      attachment.id ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Download className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          },
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
               </div>
             </>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* PREVIEW */}
+      {/* ========================================================
+          PREVIEW
+          ======================================================== */}
       <Dialog
         open={previewDialogOpen}
-        onOpenChange={setPreviewDialogOpen}
+        onOpenChange={
+          handlePreviewDialogChange
+        }
       >
         <DialogContent className="max-h-[95vh] sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>
-              {previewAttachment?.file_name}
+              {
+                previewAttachment?.file_name
+              }
             </DialogTitle>
           </DialogHeader>
 
           <div className="flex max-h-[75vh] min-h-[300px] items-center justify-center overflow-auto rounded-xl bg-muted/30">
-            {previewUrl && previewAttachment && isImage(previewAttachment) ? (
+            {previewUrl &&
+              previewAttachment &&
+              isImage(
+                previewAttachment,
+              ) ? (
               <img
                 src={previewUrl}
-                alt={previewAttachment.file_name}
+                alt={
+                  previewAttachment.file_name
+                }
                 className="max-h-[70vh] max-w-full object-contain"
               />
-            ) : previewUrl && previewAttachment && isPdf(previewAttachment) ? (
+            ) : previewUrl &&
+              previewAttachment &&
+              isPdf(
+                previewAttachment,
+              ) ? (
               <iframe
                 src={previewUrl}
-                title={previewAttachment.file_name}
+                title={
+                  previewAttachment.file_name
+                }
                 className="h-[70vh] w-full rounded-lg"
               />
             ) : (
               <div className="p-10 text-center">
                 <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
+
                 <p className="mt-3 text-sm text-muted-foreground">
                   Aperçu indisponible pour ce fichier.
                 </p>

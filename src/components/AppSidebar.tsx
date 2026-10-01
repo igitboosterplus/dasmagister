@@ -10,6 +10,7 @@ import {
   LogOut,
   Shield,
   MapPin,
+  Building2,
 } from 'lucide-react';
 import guimsLogo from '@/assets/guims-logo.png';
 import { supabase } from '@/integrations/supabase/client';
@@ -20,6 +21,7 @@ interface NavItem {
   path: string;
   roles: string[];
   requiresSiteResponsibility?: boolean;
+  requiresDasSarlStructure?: boolean;
 }
 
 const navItems: NavItem[] = [
@@ -33,7 +35,7 @@ const navItems: NavItem[] = [
     label: 'Pointage',
     icon: Clock,
     path: '/attendance',
-    roles: [ 'employee'],
+    roles: ['employee'],
   },
   {
     label: 'Employés',
@@ -84,6 +86,14 @@ const navItems: NavItem[] = [
     roles: ['employee'],
     requiresSiteResponsibility: true,
   },
+
+  {
+    label: 'Espace Das-Sarl',
+    icon: Building2,
+    path: '/dassarl',
+    roles: ['manager', 'employee', 'admin'],
+    // requiresDasSarlStructure: true,
+  }
 ];
 
 export default function AppSidebar() {
@@ -94,14 +104,15 @@ export default function AppSidebar() {
 
   const [isSiteResponsible, setIsSiteResponsible] = useState(false);
   const [checkingResponsibility, setCheckingResponsibility] = useState(true);
+  const [isDasSarlStructure, setIsDasSarlStructure] = useState(false);
 
   /**
    * Vérifie si l'employé connecté est responsable
-   * d'au moins un site actif.
+   * d'au moins un site actif. Et s'il appartient à Das-Sarl.
    */
   useEffect(() => {
-    const checkSiteResponsibility = async () => {
-      if (!profile?.id || role !== 'employee') {
+    const checkSiteResponsibilityAndStructure = async () => {
+      if (!profile?.id) {
         setIsSiteResponsible(false);
         setCheckingResponsibility(false);
         return;
@@ -110,25 +121,31 @@ export default function AppSidebar() {
       setCheckingResponsibility(true);
 
       try {
-        const { data, error } = await supabase
-          .from('employee_sites')
-          .select('id')
-          .eq('employee_id', profile.id)
-          .eq('is_responsible', true)
-          .eq('is_active', true)
-          .limit(1);
-
-        if (error) {
-          console.error(
-            'Erreur lors de la vérification du responsable de site:',
-            error
-          );
-
-          setIsSiteResponsible(false);
-          return;
+        if (profile.structure_id) {
+          const { data: stData } = await supabase
+            .from('structures')
+            .select('name')
+            .eq('id', profile.structure_id)
+            .single();
+          setIsDasSarlStructure(stData?.name === 'Das-Sarl');
         }
 
-        setIsSiteResponsible((data?.length ?? 0) > 0);
+        if (role === 'employee') {
+          const { data, error } = await supabase
+            .from('employee_sites')
+            .select('id')
+            .eq('employee_id', profile.id)
+            .eq('is_responsible', true)
+            .eq('is_active', true)
+            .limit(1);
+
+          if (error) {
+            console.error('Erreur lors de la vérification du responsable de site:', error);
+            setIsSiteResponsible(false);
+          } else {
+            setIsSiteResponsible((data?.length ?? 0) > 0);
+          }
+        }
       } catch (error) {
         console.error(
           'Erreur inattendue lors de la vérification:',
@@ -141,8 +158,8 @@ export default function AppSidebar() {
       }
     };
 
-    checkSiteResponsibility();
-  }, [profile?.id, role]);
+    checkSiteResponsibilityAndStructure();
+  }, [profile?.id, profile?.structure_id, role]);
 
   /**
    * Filtrage des éléments du menu.
@@ -156,6 +173,10 @@ export default function AppSidebar() {
     // Élément nécessitant d'être responsable d'un site
     if (item.requiresSiteResponsibility) {
       return isSiteResponsible;
+    }
+
+    if (item.requiresDasSarlStructure) {
+      return isDasSarlStructure;
     }
 
     return true;
@@ -203,11 +224,10 @@ export default function AppSidebar() {
               <button
                 key={item.path}
                 onClick={() => navigate(item.path)}
-                className={`sidebar-nav-item w-full text-left ${
-                  isActive
-                    ? 'bg-sidebar-accent text-sidebar-primary'
-                    : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-                }`}
+                className={`sidebar-nav-item w-full text-left ${isActive
+                  ? 'bg-sidebar-accent text-sidebar-primary'
+                  : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                  }`}
               >
                 <item.icon className="h-4 w-4 flex-shrink-0" />
                 {item.label}

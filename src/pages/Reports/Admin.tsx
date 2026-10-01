@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import DashboardLayout from '@/components/DashboardLayout'
+import { useToast } from '@/hooks/use-toast'
 import { supabase } from '@/integrations/supabase/client'
 
 import {
@@ -178,6 +179,7 @@ function getFileIcon(file: Attachment) {
 }
 
 export default function AdminReports() {
+  const { toast } = useToast()
   const [structures, setStructures] = useState<Structure[]>([])
   const [sites, setSites] = useState<Site[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -304,9 +306,9 @@ export default function AdminReports() {
 
       const structureState: Record<string, boolean> = {}
 
-      ;(structuresResult.data || []).forEach((structure) => {
-        structureState[structure.id] = true
-      })
+        ; (structuresResult.data || []).forEach((structure) => {
+          structureState[structure.id] = true
+        })
 
       setExpandedStructures(structureState)
     } catch (error) {
@@ -535,7 +537,11 @@ export default function AdminReports() {
       setPreviewOpen(true)
     } catch (error) {
       console.error(error)
-      alert('Impossible d’ouvrir cette pièce jointe.')
+      toast({
+        title: 'Erreur',
+        description: 'Impossible d’ouvrir cette pièce jointe.',
+        variant: 'destructive',
+      })
     }
   }
 
@@ -564,7 +570,11 @@ export default function AdminReports() {
       URL.revokeObjectURL(objectUrl)
     } catch (error) {
       console.error(error)
-      alert('Impossible de télécharger le fichier.')
+      toast({
+        title: 'Erreur',
+        description: 'Impossible de télécharger le fichier.',
+        variant: 'destructive',
+      })
     } finally {
       setDownloading(null)
     }
@@ -977,7 +987,7 @@ export default function AdminReports() {
                                   ({
                                     employee,
                                     reports:
-                                      employeeReports,
+                                    employeeReports,
                                   }) => (
                                     <div
                                       key={employee.id}
@@ -1026,7 +1036,7 @@ export default function AdminReports() {
                                             }{' '}
                                             rapport
                                             {employeeReports.length >
-                                            1
+                                              1
                                               ? 's'
                                               : ''}
                                           </p>
@@ -1036,21 +1046,21 @@ export default function AdminReports() {
                                       {expandedEmployees[
                                         employee.id
                                       ] && (
-                                        <div className="space-y-2 border-t bg-muted/10 p-3">
-                                          {employeeReports.map(
-                                            (report) => (
-                                              <ReportRow
-                                                key={
-                                                  report.id
-                                                }
-                                                report={
-                                                  report
-                                                }
-                                              />
-                                            ),
-                                          )}
-                                        </div>
-                                      )}
+                                          <div className="space-y-2 border-t bg-muted/10 p-3">
+                                            {employeeReports.map(
+                                              (report) => (
+                                                <ReportRow
+                                                  key={
+                                                    report.id
+                                                  }
+                                                  report={
+                                                    report
+                                                  }
+                                                />
+                                              ),
+                                            )}
+                                          </div>
+                                        )}
                                     </div>
                                   ),
                                 )}
@@ -1187,18 +1197,18 @@ export default function AdminReports() {
                               <div className="flex gap-1">
                                 {(isImage(attachment) ||
                                   isPdf(attachment)) && (
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    onClick={() =>
-                                      previewFile(
-                                        attachment,
-                                      )
-                                    }
-                                  >
-                                    <Eye className="h-4 w-4" />
-                                  </Button>
-                                )}
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      onClick={() =>
+                                        previewFile(
+                                          attachment,
+                                        )
+                                      }
+                                    >
+                                      <Eye className="h-4 w-4" />
+                                    </Button>
+                                  )}
 
                                 <Button
                                   size="icon"
@@ -1214,7 +1224,7 @@ export default function AdminReports() {
                                   }
                                 >
                                   {downloading ===
-                                  attachment.id ? (
+                                    attachment.id ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
                                   ) : (
                                     <Download className="h-4 w-4" />

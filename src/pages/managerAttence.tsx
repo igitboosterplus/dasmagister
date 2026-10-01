@@ -8,6 +8,7 @@ import {
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/components/ui/use-toast';
 
 import {
   Card,
@@ -140,6 +141,12 @@ const STATUS_LABELS: Record<
       'bg-emerald-500/10 text-emerald-700 border-emerald-200',
   },
 
+  mission: {
+    label: 'En mission',
+    className:
+      'bg-indigo-500/10 text-indigo-700 border-indigo-200',
+  },
+
   out_of_zone: {
     label: 'Hors zone',
     className:
@@ -261,6 +268,7 @@ const formatDuration = (
 
 export default function ManagerAttendanceReview() {
   const { profile, role } = useAuth();
+  const { toast } = useToast();
 
   // ----------------------------------------------------------
   // DATA
@@ -332,6 +340,13 @@ export default function ManagerAttendanceReview() {
 
   const [errorMessage, setErrorMessage] =
     useState<string | null>(null);
+
+  useEffect(() => {
+    if (errorMessage) {
+      toast({ title: 'Erreur', description: errorMessage, variant: 'destructive' });
+      setErrorMessage(null);
+    }
+  }, [errorMessage, toast]);
 
 
   // ==========================================================
@@ -419,10 +434,59 @@ export default function ManagerAttendanceReview() {
           throw error;
         }
 
-        setRows(
-          (data as unknown as AttendanceRow[]) ||
-          []
-        );
+        let allRows = (data as unknown as AttendanceRow[]) || [];
+
+        // SPECIFIQUE DAS-SARL : Intégration des missions du jour
+        if (profile?.structure_id) {
+          const { data: stData } = await supabase
+            .from('structures')
+            .select('name')
+            .eq('id', profile.structure_id)
+            .single();
+
+          if (stData?.name === 'Das-Sarl') {
+            const startOfDay = new Date(selectedDate);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(selectedDate);
+            endOfDay.setHours(23, 59, 59, 999);
+
+            const { data: missionsData } = await supabase
+              .from('missions')
+              .select(`
+                 id, employee_id, started_at, completed_at, start_latitude, start_longitude,
+                 employees(id, first_name, last_name)
+               `)
+              .eq('structure_id', profile.structure_id)
+              .gte('planned_start', startOfDay.toISOString())
+              .lte('planned_start', endOfDay.toISOString());
+
+            if (missionsData) {
+              const missionRows: AttendanceRow[] = missionsData.map((m: any) => ({
+                id: m.id,
+                employee_id: m.employee_id,
+                site_id: null,
+                attendance_date: selectedDate,
+                check_in: m.started_at,
+                check_out: m.completed_at,
+                check_in_latitude: m.start_latitude,
+                check_in_longitude: m.start_longitude,
+                check_in_accuracy_m: null,
+                check_out_accuracy_m: null,
+                check_in_distance_m: null,
+                check_out_distance_m: null,
+                validation_method: 'mission',
+                validation_status: 'mission',
+                client_timestamp: null,
+                synced_at: null,
+                employee: m.employees,
+                site: null
+              }));
+              allRows = [...allRows, ...missionRows];
+            }
+          }
+        }
+
+        setRows(allRows);
 
       } catch (error: any) {
         console.error(
@@ -699,7 +763,7 @@ export default function ManagerAttendanceReview() {
         new_data: {
           validation_status:
             action ===
-            'attendance_approved'
+              'attendance_approved'
               ? 'valid'
               : 'rejected',
         },
@@ -753,10 +817,10 @@ export default function ManagerAttendanceReview() {
         current.map((item) =>
           item.id === row.id
             ? {
-                ...item,
-                validation_status:
-                  'valid',
-              }
+              ...item,
+              validation_status:
+                'valid',
+            }
             : item
         )
       );
@@ -825,17 +889,17 @@ export default function ManagerAttendanceReview() {
         rejectRow,
         'attendance_rejected',
         rejectReason.trim() ||
-          undefined
+        undefined
       );
 
       setRows((current) =>
         current.map((item) =>
           item.id === rejectRow.id
             ? {
-                ...item,
-                validation_status:
-                  'rejected',
-              }
+              ...item,
+              validation_status:
+                'rejected',
+            }
             : item
         )
       );
@@ -953,11 +1017,10 @@ export default function ManagerAttendanceReview() {
               className="gap-2"
             >
               <RefreshCw
-                className={`h-4 w-4 ${
-                  refreshing
-                    ? 'animate-spin'
-                    : ''
-                }`}
+                className={`h-4 w-4 ${refreshing
+                  ? 'animate-spin'
+                  : ''
+                  }`}
               />
 
               Actualiser
@@ -972,21 +1035,7 @@ export default function ManagerAttendanceReview() {
             ERROR
         ================================================== */}
 
-        {errorMessage && (
-          <Alert variant="destructive">
-
-            <AlertTriangle className="h-4 w-4" />
-
-            <AlertTitle>
-              Une erreur est survenue
-            </AlertTitle>
-
-            <AlertDescription>
-              {errorMessage}
-            </AlertDescription>
-
-          </Alert>
-        )}
+        {/* Removed inline Alert, using toast via useEffect now */}
 
 
         {/* ==================================================
@@ -1889,8 +1938,8 @@ export default function ManagerAttendanceReview() {
 
                             {row.check_in_distance_m != null
                               ? `GPS : ${Math.round(
-                                  row.check_in_distance_m
-                                )} m`
+                                row.check_in_distance_m
+                              )} m`
                               : 'GPS : —'}
 
                           </div>
@@ -2089,8 +2138,8 @@ export default function ManagerAttendanceReview() {
                       <p className="font-medium">
                         {selectedRow.check_in_distance_m != null
                           ? `${Math.round(
-                              selectedRow.check_in_distance_m
-                            )} m`
+                            selectedRow.check_in_distance_m
+                          )} m`
                           : '—'}
                       </p>
 
@@ -2106,8 +2155,8 @@ export default function ManagerAttendanceReview() {
                       <p className="font-medium">
                         {selectedRow.check_in_accuracy_m != null
                           ? `±${Math.round(
-                              selectedRow.check_in_accuracy_m
-                            )} m`
+                            selectedRow.check_in_accuracy_m
+                          )} m`
                           : '—'}
                       </p>
 
@@ -2188,39 +2237,39 @@ export default function ManagerAttendanceReview() {
                 {(selectedRow.client_timestamp ||
                   selectedRow.synced_at) && (
 
-                  <div className="rounded-lg bg-muted/40 p-4 text-sm">
+                    <div className="rounded-lg bg-muted/40 p-4 text-sm">
 
-                    <p className="font-medium">
-                      Synchronisation
-                    </p>
-
-                    {selectedRow.client_timestamp && (
-                      <p className="mt-1 text-muted-foreground">
-                        Horodatage appareil :{' '}
-                        {format(
-                          new Date(
-                            selectedRow.client_timestamp
-                          ),
-                          'dd/MM/yyyy HH:mm'
-                        )}
+                      <p className="font-medium">
+                        Synchronisation
                       </p>
-                    )}
 
-                    {selectedRow.synced_at && (
-                      <p className="text-muted-foreground">
-                        Synchronisé :{' '}
-                        {format(
-                          new Date(
-                            selectedRow.synced_at
-                          ),
-                          'dd/MM/yyyy HH:mm'
-                        )}
-                      </p>
-                    )}
+                      {selectedRow.client_timestamp && (
+                        <p className="mt-1 text-muted-foreground">
+                          Horodatage appareil :{' '}
+                          {format(
+                            new Date(
+                              selectedRow.client_timestamp
+                            ),
+                            'dd/MM/yyyy HH:mm'
+                          )}
+                        </p>
+                      )}
 
-                  </div>
+                      {selectedRow.synced_at && (
+                        <p className="text-muted-foreground">
+                          Synchronisé :{' '}
+                          {format(
+                            new Date(
+                              selectedRow.synced_at
+                            ),
+                            'dd/MM/yyyy HH:mm'
+                          )}
+                        </p>
+                      )}
 
-                )}
+                    </div>
+
+                  )}
 
               </div>
 

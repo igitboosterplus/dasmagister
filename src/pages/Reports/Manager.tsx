@@ -238,6 +238,8 @@ export default function ManagerReportsPage() {
   const [reports, setReports] = useState<Report[]>([])
   const [sites, setSites] = useState<Site[]>([])
   const [reportTypes, setReportTypes] = useState<ReportType[]>([])
+  // employee_id → primary site_id (from employee_sites V3)
+  const [employeeSiteMap, setEmployeeSiteMap] = useState<Map<string, string>>(new Map())
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -255,6 +257,7 @@ export default function ManagerReportsPage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [siteFilter, setSiteFilter] = useState<string>('all')
 
   /* -------------------------------------------------------
      GROUP EXPANSION
@@ -326,13 +329,11 @@ export default function ManagerReportsPage() {
   const toggleSite = (siteId: string) => {
     setExpandedSites((current) => {
       const next = new Set(current)
-
       if (next.has(siteId)) {
         next.delete(siteId)
       } else {
         next.add(siteId)
       }
-
       return next
     })
   }
@@ -340,40 +341,26 @@ export default function ManagerReportsPage() {
   const toggleType = (typeKey: string) => {
     setExpandedTypes((current) => {
       const next = new Set(current)
-
       if (next.has(typeKey)) {
         next.delete(typeKey)
       } else {
         next.add(typeKey)
       }
-
       return next
     })
   }
 
   const expandAllSites = (groups: SiteReportGroup[]) => {
     setExpandedSites(
-      new Set(
-        groups.map(
-          (group) => group.site?.id ?? 'without-site',
-        ),
-      ),
+      new Set(groups.map((g) => g.site?.id ?? 'without-site')),
     )
-
     const typeKeys = new Set<string>()
-
-    groups.forEach((group) => {
-      const siteId =
-        group.site?.id ?? 'without-site'
-
-      group.reportsByType.forEach((typeGroup) => {
-        const typeId =
-          typeGroup.type?.id ?? 'without-type'
-
-        typeKeys.add(`${siteId}-${typeId}`)
+    groups.forEach((g) => {
+      const siteId = g.site?.id ?? 'without-site'
+      g.reportsByType.forEach((tg) => {
+        typeKeys.add(`${siteId}-${tg.type?.id ?? 'without-type'}`)
       })
     })
-
     setExpandedTypes(typeKeys)
   }
 
@@ -408,23 +395,57 @@ export default function ManagerReportsPage() {
           error: employeeError,
         } = await supabase
           .from('employees')
-          .select(`
-            id,
-            auth_user_id,
-            first_name,
-            last_name,
-            structure_id,
-            site_id,
-            is_active
-          `)
+          .select('id, auth_user_id, first_name, last_name, structure_id, is_active')
           .eq('structure_id', profile.structure_id)
-          .order('last_name', {
-            ascending: true,
-          })
+          .order('last_name', { ascending: true })
 
-        if (employeeError) {
-          throw employeeError
+        if (employeeError) throw employeeError
+
+        /* ---------------------------------------------------
+           EMPLOYEE_SITES (V3)
+           Permet de déterminer le site principal de chaque
+           employé. On prend le premier site actif où
+           l'employé est responsable, ou à défaut actif.
+        --------------------------------------------------- */
+
+        const employeeIds = (employeeData ?? []).map((e) => e.id)
+
+        const empSiteMap = new Map<string, string>()
+
+        if (employeeIds.length > 0) {
+          const {
+            data: empSiteData,
+            error: empSiteError,
+          } = await supabase
+            .from('employee_sites')
+            .select('employee_id, site_id, is_responsible, is_active')
+            .in('employee_id', employeeIds)
+            .eq('is_active', true)
+
+          if (empSiteError) {
+            console.warn('employee_sites non chargé:', empSiteError.message)
+          } else {
+            /*
+             * Priorité : site où l'employé est responsable,
+             * sinon premier site actif.
+             */
+            const rows = empSiteData ?? []
+            // First pass : responsable
+            rows.filter((r) => r.is_responsible).forEach((r) => {
+              if (!empSiteMap.has(r.employee_id)) {
+                empSiteMap.set(r.employee_id, r.site_id)
+              }
+            })
+            // Second pass : actif simple
+            rows.filter((r) => !r.is_responsible).forEach((r) => {
+              if (!empSiteMap.has(r.employee_id)) {
+                empSiteMap.set(r.employee_id, r.site_id)
+              }
+            })
+          }
         }
+
+        setEmployeeSiteMap(empSiteMap)
 
         /* ---------------------------------------------------
            SITES
@@ -477,18 +498,15 @@ export default function ManagerReportsPage() {
         }
 
         /* ---------------------------------------------------
-           REPORTS
-
-           On conserve les rapports liés au manager :
-           - employee_id
-           - author_employee_id
-           - recipient_employee_id
-           - recipient_id legacy
+           REPORTS REÇUS
+           Rapports dont le destinataire est le manager courant.
+           Un rapport appartient à un et un seul employé
+           de la structure.
         --------------------------------------------------- */
 
         const {
-          data: reportData,
-          error: reportError,
+          data: receivedData,
+          error: receivedError,
         } = await supabase
           .from('reports')
           .select(`
@@ -523,19 +541,80 @@ export default function ManagerReportsPage() {
           `)
           .eq('structure_id', profile.structure_id)
           .or(
-            `employee_id.eq.${profile.id},` +
-              `author_employee_id.eq.${profile.id},` +
-              `recipient_employee_id.eq.${profile.id},` +
-              `recipient_id.eq.${profile.id}`,
+            `recipient_employee_id.eq.${profile.id},` +
+            `recipient_id.eq.${profile.id}`,
           )
           .order('submitted_at', {
             ascending: false,
             nullsFirst: false,
           })
 
-        if (reportError) {
-          throw reportError
+        if (receivedError) {
+          throw receivedError
         }
+
+        /* ---------------------------------------------------
+           MES RAPPORTS
+           Rapports créés par le manager (vers l'admin).
+        --------------------------------------------------- */
+
+        const {
+          data: myData,
+          error: myError,
+        } = await supabase
+          .from('reports')
+          .select(`
+            id,
+            employee_id,
+            author_employee_id,
+            recipient_employee_id,
+            recipient_id,
+            report_type_id,
+            title,
+            description,
+            file_url,
+            submitted_at,
+            validated_at,
+            created_at,
+            received_at,
+            forwarded_by,
+            forwarded_at,
+            structure_id,
+            site_id,
+            status,
+            report_attachments (
+              id,
+              report_id,
+              file_name,
+              file_path,
+              file_url,
+              mime_type,
+              file_size,
+              created_at
+            )
+          `)
+          .or(
+            `employee_id.eq.${profile.id},` +
+            `author_employee_id.eq.${profile.id}`,
+          )
+          .order('submitted_at', {
+            ascending: false,
+            nullsFirst: false,
+          })
+
+        if (myError) {
+          throw myError
+        }
+
+        const reportData = [
+          ...(receivedData ?? []),
+          ...(myData ?? []).filter(
+            (r) =>
+              !(receivedData ?? []).some(
+                (rec) => rec.id === r.id,
+              ),
+          ),
+        ]
 
         /* ---------------------------------------------------
            MAPS
@@ -543,21 +622,21 @@ export default function ManagerReportsPage() {
 
         const employeeMap = new Map<string, Employee>()
 
-        ;(employeeData ?? []).forEach((employee) => {
-          employeeMap.set(employee.id, employee)
-        })
+          ; (employeeData ?? []).forEach((employee) => {
+            employeeMap.set(employee.id, employee)
+          })
 
         const siteMap = new Map<string, Site>()
 
-        ;(siteData ?? []).forEach((site) => {
-          siteMap.set(site.id, site)
-        })
+          ; (siteData ?? []).forEach((site) => {
+            siteMap.set(site.id, site)
+          })
 
         const typeMap = new Map<string, ReportType>()
 
-        ;(typeData ?? []).forEach((type) => {
-          typeMap.set(type.id, type)
-        })
+          ; (typeData ?? []).forEach((type) => {
+            typeMap.set(type.id, type)
+          })
 
         /* ---------------------------------------------------
            ENRICHMENT
@@ -571,22 +650,22 @@ export default function ManagerReportsPage() {
 
           const author =
             report.author_employee_id
-              ? employeeMap.get(
-                  report.author_employee_id,
-                ) ?? null
+              ? employeeMap.get(report.author_employee_id) ?? null
               : employee
 
           /*
-           * Détermination du site réel du rapport :
+           * Résolution du site du rapport (priorité décroissante) :
            *
-           * 1. site_id directement enregistré sur le rapport
-           * 2. site de l'employé
-           * 3. site de l'auteur
+           * 1. site_id enregistré directement sur le rapport
+           * 2. site principal de l'employé via employee_sites (V3)
+           * 3. site principal de l'auteur via employee_sites (V3)
            */
           const effectiveSiteId =
             report.site_id ??
-            employee?.site_id ??
-            author?.site_id ??
+            empSiteMap.get(report.employee_id) ??
+            (report.author_employee_id
+              ? empSiteMap.get(report.author_employee_id)
+              : undefined) ??
             null
 
           const reportSite = effectiveSiteId
@@ -595,17 +674,11 @@ export default function ManagerReportsPage() {
 
           return {
             ...report,
-
             employee,
             author,
-
             site: reportSite,
-
-            report_types:
-              typeMap.get(report.report_type_id) ?? null,
-
-            report_attachments:
-              report.report_attachments ?? [],
+            report_types: typeMap.get(report.report_type_id) ?? null,
+            report_attachments: report.report_attachments ?? [],
           }
         })
 
@@ -683,50 +756,37 @@ export default function ManagerReportsPage() {
 
   const currentReports = useMemo(() => {
     const source =
-      viewMode === 'mine'
-        ? myReports
-        : receivedReports
+      viewMode === 'mine' ? myReports : receivedReports
 
-    const normalizedSearch =
-      search.trim().toLowerCase()
+    const normalizedSearch = search.trim().toLowerCase()
 
     return source.filter((report) => {
-      const employeeName =
-        getEmployeeName(
-          report.employee ?? report.author,
-        )
-
-      const typeName =
-        report.report_types?.name?.toLowerCase() ?? ''
-
-      const title =
-        report.title?.toLowerCase() ?? ''
-
-      const description =
-        report.description?.toLowerCase() ?? ''
+      const employeeName = getEmployeeName(report.employee ?? report.author)
+      const typeName = report.report_types?.name?.toLowerCase() ?? ''
+      const title = report.title?.toLowerCase() ?? ''
+      const description = report.description?.toLowerCase() ?? ''
+      const siteName = report.site?.name?.toLowerCase() ?? ''
 
       const matchesSearch =
         !normalizedSearch ||
         title.includes(normalizedSearch) ||
         description.includes(normalizedSearch) ||
-        employeeName
-          .toLowerCase()
-          .includes(normalizedSearch) ||
-        typeName.includes(normalizedSearch)
+        employeeName.toLowerCase().includes(normalizedSearch) ||
+        typeName.includes(normalizedSearch) ||
+        siteName.includes(normalizedSearch)
 
       const matchesStatus =
-        statusFilter === 'all' ||
-        report.status === statusFilter
+        statusFilter === 'all' || report.status === statusFilter
 
       const matchesType =
-        typeFilter === 'all' ||
-        report.report_type_id === typeFilter
+        typeFilter === 'all' || report.report_type_id === typeFilter
 
-      return (
-        matchesSearch &&
-        matchesStatus &&
-        matchesType
-      )
+      const matchesSite =
+        siteFilter === 'all' ||
+        (siteFilter === 'without-site' && !report.site?.id) ||
+        report.site?.id === siteFilter
+
+      return matchesSearch && matchesStatus && matchesType && matchesSite
     })
   }, [
     viewMode,
@@ -735,6 +795,7 @@ export default function ManagerReportsPage() {
     search,
     statusFilter,
     typeFilter,
+    siteFilter,
   ])
 
   /* =======================================================
@@ -756,198 +817,79 @@ export default function ManagerReportsPage() {
        └── Aucun rapport
   ======================================================= */
 
+  /*
+   * Catégorisation : Site → Type de rapport → Rapport
+   *
+   * Règle métier :
+   * Un rapport appartient à un et un seul employé
+   * qui appartient à un et un seul site de la structure.
+   *
+   * On initialise TOUS les sites actifs de la structure
+   * pour afficher même les sites sans rapports.
+   */
   const reportsBySite = useMemo<SiteReportGroup[]>(() => {
-    if (viewMode !== 'received') {
-      return []
-    }
+    if (viewMode !== 'received') return []
 
-    /*
-     * -------------------------------------------------------
-     * 1. Initialiser TOUS les sites
-     * -------------------------------------------------------
-     */
-
+    /* 1. Initialiser tous les sites */
     const siteGroups = new Map<
       string,
-      {
-        site: Site | null
-        typeGroups: Map<
-          string,
-          {
-            type: ReportType | null
-            reports: Report[]
-          }
-        >
-      }
+      { site: Site | null; typeGroups: Map<string, { type: ReportType | null; reports: Report[] }> }
     >()
 
     sites.forEach((site) => {
-      siteGroups.set(site.id, {
-        site,
-        typeGroups: new Map(),
-      })
+      siteGroups.set(site.id, { site, typeGroups: new Map() })
     })
 
-    /*
-     * -------------------------------------------------------
-     * 2. Groupe spécial pour les rapports sans site
-     * -------------------------------------------------------
-     */
-
-    const ensureWithoutSiteGroup = () => {
+    /* 2. Bucket spécial pour rapports sans site identifié */
+    const ensureWithoutSite = () => {
       if (!siteGroups.has('without-site')) {
-        siteGroups.set('without-site', {
-          site: null,
-          typeGroups: new Map(),
-        })
+        siteGroups.set('without-site', { site: null, typeGroups: new Map() })
       }
-
       return siteGroups.get('without-site')!
     }
 
-    /*
-     * -------------------------------------------------------
-     * 3. Ajouter les rapports aux bons sites
-     * -------------------------------------------------------
-     */
+    /* 3. Répartir les rapports */
+    for (const report of currentReports) {
+      const bucketId = report.site?.id ?? 'without-site'
+      const group = siteGroups.get(bucketId) ?? ensureWithoutSite()
 
-    currentReports.forEach((report) => {
-      /*
-       * Le site a déjà été déterminé lors de l'enrichissement.
-       *
-       * On garde toutefois les fallbacks ici afin que le
-       * regroupement reste robuste.
-       */
-      const effectiveSiteId =
-        report.site?.id ??
-        report.site_id ??
-        report.employee?.site_id ??
-        report.author?.site_id ??
-        'without-site'
-
-      const siteGroup =
-        siteGroups.get(effectiveSiteId) ??
-        ensureWithoutSiteGroup()
-
-      /*
-       * -----------------------------------------------------
-       * TYPE DU RAPPORT
-       * -----------------------------------------------------
-       */
-
-      const effectiveTypeId =
-        report.report_type_id ?? 'without-type'
-
+      const typeId = report.report_type_id ?? 'without-type'
       const reportType =
         report.report_types ??
-        reportTypes.find(
-          (type) =>
-            type.id === report.report_type_id,
-        ) ??
+        reportTypes.find((t) => t.id === report.report_type_id) ??
         null
 
-      if (!siteGroup.typeGroups.has(effectiveTypeId)) {
-        siteGroup.typeGroups.set(
-          effectiveTypeId,
-          {
-            type: reportType,
-            reports: [],
-          },
-        )
+      if (!group.typeGroups.has(typeId)) {
+        group.typeGroups.set(typeId, { type: reportType, reports: [] })
       }
+      group.typeGroups.get(typeId)!.reports.push(report)
+    }
 
-      siteGroup.typeGroups
-        .get(effectiveTypeId)!
-        .reports.push(report)
-    })
-
-    /*
-     * -------------------------------------------------------
-     * 4. Transformer en tableau + trier
-     * -------------------------------------------------------
-     */
-
+    /* 4. Convertir en tableau trié */
     return Array.from(siteGroups.entries())
-      .map(([siteId, siteGroup]) => {
-        const reportsByType = Array.from(
-          siteGroup.typeGroups.entries(),
-        )
-          .map(([typeId, typeGroup]) => ({
-            type:
-              typeGroup.type ??
-              (
-                typeId !== 'without-type'
-                  ? reportTypes.find(
-                      (type) =>
-                        type.id === typeId,
-                    ) ?? null
-                  : null
-              ),
-
-            reports: [...typeGroup.reports].sort(
-              (a, b) => {
-                const dateA = new Date(
-                  a.submitted_at ??
-                    a.created_at ??
-                    0,
-                ).getTime()
-
-                const dateB = new Date(
-                  b.submitted_at ??
-                    b.created_at ??
-                    0,
-                ).getTime()
-
-                return dateB - dateA
-              },
-            ),
+      .map(([siteId, { site, typeGroups }]) => ({
+        site: siteId === 'without-site' ? null : site,
+        reportsByType: Array.from(typeGroups.values())
+          .map(({ type, reports }) => ({
+            type,
+            reports: [...reports].sort((a, b) => {
+              const da = new Date(a.submitted_at ?? a.created_at ?? 0).getTime()
+              const db = new Date(b.submitted_at ?? b.created_at ?? 0).getTime()
+              return db - da
+            }),
           }))
-          .sort((a, b) => {
-            const nameA =
-              a.type?.name ??
-              'Type de rapport non défini'
-
-            const nameB =
-              b.type?.name ??
-              'Type de rapport non défini'
-
-            return nameA.localeCompare(
-              nameB,
-              'fr',
-            )
-          })
-
-        return {
-          site:
-            siteId === 'without-site'
-              ? null
-              : siteGroup.site,
-          reportsByType,
-        }
-      })
-      .sort((a, b) => {
-        /*
-         * Les sites sans rapport restent affichés.
-         */
-        const nameA =
-          a.site?.name ??
-          'Site non attribué'
-
-        const nameB =
-          b.site?.name ??
-          'Site non attribué'
-
-        return nameA.localeCompare(
-          nameB,
-          'fr',
-        )
-      })
-  }, [
-    currentReports,
-    sites,
-    reportTypes,
-    viewMode,
-  ])
+          .sort((a, b) =>
+            (a.type?.name ?? 'zzz').localeCompare(
+              b.type?.name ?? 'zzz', 'fr',
+            ),
+          ),
+      }))
+      .sort((a, b) =>
+        (a.site?.name ?? 'Site non attribué').localeCompare(
+          b.site?.name ?? 'Site non attribué', 'fr',
+        ),
+      )
+  }, [currentReports, sites, reportTypes, viewMode])
 
   /* =======================================================
      STATS
@@ -1139,151 +1081,95 @@ export default function ManagerReportsPage() {
   }
 
   const createReport = async () => {
-    if (
-      !profile?.id ||
-      !profile.structure_id
-    ) {
-      showFeedback(
-        'error',
-        'Profil utilisateur introuvable.',
-      )
-
+    if (!profile?.id || !profile.structure_id) {
+      showFeedback('error', 'Profil utilisateur introuvable.')
       return
     }
 
     if (!newReportTypeId) {
-      showFeedback(
-        'error',
-        'Sélectionnez le type de rapport.',
-      )
-
+      showFeedback('error', 'Sélectionnez le type de rapport.')
       return
     }
 
     if (!newTitle.trim()) {
-      showFeedback(
-        'error',
-        'Le titre du rapport est obligatoire.',
-      )
-
+      showFeedback('error', 'Le titre du rapport est obligatoire.')
       return
     }
 
     setCreating(true)
 
     try {
+      /* -------------------------------------------------------
+         STEP 1 — Créer le rapport via la RPC sécurisée
+         La RPC détermine automatiquement :
+           • l'auteur (auth.uid() → employees)
+           • la structure
+           • le site principal
+           • les destinataires (manager + admin selon le rôle)
+           • les notifications
+         Le frontend n'envoie QUE les données métier.
+      ------------------------------------------------------- */
       const {
-        data: adminId,
-        error: adminError,
-      } = await supabase.rpc(
-        'get_current_admin',
-      )
+        data: reportId,
+        error: rpcError,
+      } = await supabase.rpc('submit_report', {
+        p_report_type_id: newReportTypeId,
+        p_title: newTitle.trim(),
+        p_description: newDescription.trim() || null,
+      })
 
-      if (adminError) {
-        throw adminError
+      if (rpcError) {
+        throw rpcError
       }
 
-      if (!adminId) {
-        throw new Error(
-          "Aucun administrateur n'a été trouvé.",
-        )
-      }
-
-      const {
-        data: createdReport,
-        error: reportError,
-      } = await supabase
-        .from('reports')
-        .insert({
-          employee_id: profile.id,
-          author_employee_id: profile.id,
-          recipient_employee_id: adminId,
-          recipient_id: adminId,
-          structure_id: profile.structure_id,
-          site_id:
-            profile.site_id ?? null,
-          report_type_id: newReportTypeId,
-          title: newTitle.trim(),
-          description:
-            newDescription.trim() || null,
-          file_url: null,
-          status: 'submitted',
-          submitted_at:
-            new Date().toISOString(),
-        })
-        .select('id')
-        .single()
-
-      if (reportError) {
-        throw reportError
-      }
-
-      if (!createdReport?.id) {
+      if (!reportId) {
         throw new Error(
           'Le rapport a été créé mais son identifiant est introuvable.',
         )
       }
 
+      /* -------------------------------------------------------
+         STEP 2 — Upload des pièces jointes (si présentes)
+      ------------------------------------------------------- */
       for (const file of newFiles) {
         const extension =
           file.name.includes('.')
-            ? file.name
-                .split('.')
-                .pop()
-                ?.toLowerCase() ?? 'file'
+            ? file.name.split('.').pop()?.toLowerCase() ?? 'file'
             : 'file'
 
         const filePath = [
           profile.structure_id,
           profile.id,
-          createdReport.id,
+          reportId,
           `${crypto.randomUUID()}.${extension}`,
         ].join('/')
 
-        const {
-          error: uploadError,
-        } = await supabase.storage
+        const { error: uploadError } = await supabase.storage
           .from('reports')
-          .upload(
-            filePath,
-            file,
-            {
-              cacheControl: '3600',
-              upsert: false,
-              contentType:
-                file.type || undefined,
-            },
-          )
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: false,
+            contentType: file.type || undefined,
+          })
 
         if (uploadError) {
-          console.error(
-            'Erreur upload fichier:',
-            uploadError,
-          )
-
+          console.error('Erreur upload fichier:', uploadError)
           continue
         }
 
-        const {
-          error: attachmentError,
-        } = await supabase
+        const { error: attachmentError } = await supabase
           .from('report_attachments')
           .insert({
-            report_id:
-              createdReport.id,
+            report_id: reportId,
             file_name: file.name,
             file_path: filePath,
             file_url: null,
-            mime_type:
-              file.type || null,
+            mime_type: file.type || null,
             file_size: file.size,
           })
 
         if (attachmentError) {
-          console.error(
-            'Erreur insertion attachment:',
-            attachmentError,
-          )
+          console.error('Erreur insertion attachment:', attachmentError)
         }
       }
 
@@ -1292,15 +1178,12 @@ export default function ManagerReportsPage() {
 
       showFeedback(
         'success',
-        'Votre rapport a été envoyé à l’administrateur.',
+        'Votre rapport a été envoyé à l\u2019administrateur.',
       )
 
       await loadData(false)
     } catch (error) {
-      console.error(
-        'Erreur création rapport:',
-        error,
-      )
+      console.error('Erreur création rapport:', error)
 
       showFeedback(
         'error',
@@ -1354,18 +1237,18 @@ export default function ManagerReportsPage() {
         <div className="flex shrink-0 items-center gap-1">
           {(isImage(attachment) ||
             isPdf(attachment)) && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              title="Consulter"
-              onClick={() =>
-                previewFile(attachment)
-              }
-            >
-              <Eye className="h-4 w-4" />
-            </Button>
-          )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                title="Consulter"
+                onClick={() =>
+                  previewFile(attachment)
+                }
+              >
+                <Eye className="h-4 w-4" />
+              </Button>
+            )}
 
           <Button
             type="button"
@@ -1417,13 +1300,13 @@ export default function ManagerReportsPage() {
                 <Badge
                   className={
                     statusClasses[
-                      report.status
+                    report.status
                     ]
                   }
                 >
                   {
                     statusLabels[
-                      report.status
+                    report.status
                     ]
                   }
                 </Badge>
@@ -1432,11 +1315,11 @@ export default function ManagerReportsPage() {
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                 {viewMode ===
                   'received' && (
-                  <span className="flex items-center gap-1">
-                    <User className="h-3.5 w-3.5" />
-                    {employeeName}
-                  </span>
-                )}
+                    <span className="flex items-center gap-1">
+                      <User className="h-3.5 w-3.5" />
+                      {employeeName}
+                    </span>
+                  )}
 
                 {report.report_types?.name && (
                   <span>
@@ -1447,7 +1330,7 @@ export default function ManagerReportsPage() {
                 <span>
                   {formatDate(
                     report.submitted_at ??
-                      report.created_at,
+                    report.created_at,
                   )}
                 </span>
 
@@ -1466,7 +1349,7 @@ export default function ManagerReportsPage() {
 
               {report.report_attachments &&
                 report.report_attachments.length >
-                  0 && (
+                0 && (
                   <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
                     <File className="h-3.5 w-3.5" />
 
@@ -1506,7 +1389,7 @@ export default function ManagerReportsPage() {
 
             {report.report_attachments &&
               report.report_attachments.length >
-                0 && (
+              0 && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -1592,11 +1475,10 @@ export default function ManagerReportsPage() {
 
         {feedback && (
           <div
-            className={`fixed right-4 top-4 z-[100] flex max-w-sm items-start gap-3 rounded-xl border bg-background p-4 shadow-lg ${
-              feedback.type === 'success'
-                ? 'border-green-200'
-                : 'border-red-200'
-            }`}
+            className={`fixed right-4 top-4 z-[100] flex max-w-sm items-start gap-3 rounded-xl border bg-background p-4 shadow-lg ${feedback.type === 'success'
+              ? 'border-green-200'
+              : 'border-red-200'
+              }`}
           >
             {feedback.type === 'success' ? (
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600" />
@@ -1644,11 +1526,10 @@ export default function ManagerReportsPage() {
               title="Actualiser"
             >
               <RefreshCw
-                className={`h-4 w-4 ${
-                  refreshing
-                    ? 'animate-spin'
-                    : ''
-                }`}
+                className={`h-4 w-4 ${refreshing
+                  ? 'animate-spin'
+                  : ''
+                  }`}
               />
             </Button>
 
@@ -1675,11 +1556,10 @@ export default function ManagerReportsPage() {
                 setStatusFilter('all')
                 setTypeFilter('all')
               }}
-              className={`rounded-lg px-4 py-3 text-sm font-medium transition ${
-                viewMode === 'mine'
-                  ? 'bg-background shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
+              className={`rounded-lg px-4 py-3 text-sm font-medium transition ${viewMode === 'mine'
+                ? 'bg-background shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+                }`}
             >
               Mes rapports
 
@@ -1696,11 +1576,10 @@ export default function ManagerReportsPage() {
                 setStatusFilter('all')
                 setTypeFilter('all')
               }}
-              className={`rounded-lg px-4 py-3 text-sm font-medium transition ${
-                viewMode === 'received'
-                  ? 'bg-background shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
+              className={`rounded-lg px-4 py-3 text-sm font-medium transition ${viewMode === 'received'
+                ? 'bg-background shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+                }`}
             >
               Rapports reçus
 
@@ -1757,359 +1636,210 @@ export default function ManagerReportsPage() {
 
         {/* FILTERS */}
 
-        <div className="grid gap-3 rounded-xl border bg-card p-4 md:grid-cols-[1fr_180px_200px]">
+        <div className={`grid gap-3 rounded-xl border bg-card p-4 ${viewMode === 'received' ? 'md:grid-cols-[1fr_160px_180px_180px]' : 'md:grid-cols-[1fr_160px_180px]'}`}>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-
             <Input
               value={search}
-              onChange={(event) =>
-                setSearch(
-                  event.target.value,
-                )
-              }
+              onChange={(event) => setSearch(event.target.value)}
               placeholder={
                 viewMode === 'received'
-                  ? 'Rechercher un employé ou un rapport...'
+                  ? 'Rechercher un site, employé ou rapport...'
                   : 'Rechercher un rapport...'
               }
               className="pl-9"
             />
           </div>
 
-          <Select
-            value={statusFilter}
-            onValueChange={
-              setStatusFilter
-            }
-          >
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger>
               <SelectValue placeholder="Statut" />
             </SelectTrigger>
-
             <SelectContent>
-              <SelectItem value="all">
-                Tous les statuts
-              </SelectItem>
-
-              {(
-                Object.keys(
-                  statusLabels,
-                ) as ReportStatus[]
-              ).map((status) => (
-                <SelectItem
-                  key={status}
-                  value={status}
-                >
+              <SelectItem value="all">Tous les statuts</SelectItem>
+              {(Object.keys(statusLabels) as ReportStatus[]).map((status) => (
+                <SelectItem key={status} value={status}>
                   {statusLabels[status]}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
 
-          <Select
-            value={typeFilter}
-            onValueChange={
-              setTypeFilter
-            }
-          >
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
             <SelectTrigger>
               <SelectValue placeholder="Type" />
             </SelectTrigger>
-
             <SelectContent>
-              <SelectItem value="all">
-                Tous les types
-              </SelectItem>
-
+              <SelectItem value="all">Tous les types</SelectItem>
               {reportTypes.map((type) => (
-                <SelectItem
-                  key={type.id}
-                  value={type.id}
-                >
+                <SelectItem key={type.id} value={type.id}>
                   {type.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+
+          {viewMode === 'received' && (
+            <Select value={siteFilter} onValueChange={setSiteFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="Site" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tous les sites</SelectItem>
+                {sites.map((site) => (
+                  <SelectItem key={site.id} value={site.id}>
+                    {site.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value="without-site">Sans site</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </div>
 
         {/* REPORTS */}
 
         {viewMode === 'received' ? (
-          /*
-           * IMPORTANT :
-           * Même si aucun rapport n'est trouvé,
-           * on affiche les sites.
-           */
           <div className="space-y-4">
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-lg font-semibold">
-                  Rapports par site
-                </h2>
-
+                <h2 className="text-lg font-semibold">Rapports reçus</h2>
                 <p className="text-sm text-muted-foreground">
-                  {reportsBySite.length}{' '}
-                  site
-                  {reportsBySite.length > 1
-                    ? 's'
-                    : ''}{' '}
-                  •{' '}
-                  {currentReports.length}{' '}
-                  rapport
-                  {currentReports.length > 1
-                    ? 's'
-                    : ''}
+                  {reportsBySite.length} site{reportsBySite.length > 1 ? 's' : ''}
+                  {' '}•{' '}
+                  {currentReports.length} rapport{currentReports.length > 1 ? 's' : ''}
                 </p>
               </div>
 
               <div className="flex gap-2">
                 <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    expandAllSites(
-                      reportsBySite,
-                    )
-                  }
+                  variant="outline" size="sm"
+                  onClick={() => expandAllSites(reportsBySite)}
                 >
                   Tout ouvrir
                 </Button>
-
                 <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={
-                    collapseAllSites
-                  }
+                  variant="outline" size="sm"
+                  onClick={collapseAllSites}
                 >
                   Tout fermer
                 </Button>
               </div>
             </div>
 
-            {reportsBySite.map(
-              (siteGroup) => {
-                const siteId =
-                  siteGroup.site?.id ??
-                  'without-site'
-
-                const siteName =
-                  siteGroup.site?.name ??
-                  'Site non attribué'
-
-                const siteReportCount =
-                  siteGroup.reportsByType.reduce(
-                    (
-                      total,
-                      typeGroup,
-                    ) =>
-                      total +
-                      typeGroup
-                        .reports
-                        .length,
-                    0,
-                  )
-
-                const isSiteExpanded =
-                  expandedSites.has(
-                    siteId,
-                  )
+            {reportsBySite.length === 0 ? (
+              <div className="rounded-xl border border-dashed bg-card py-16 text-center">
+                <FileText className="mx-auto h-10 w-10 text-muted-foreground/40" />
+                <p className="mt-4 font-semibold">Aucun rapport reçu</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Aucun rapport ne correspond aux filtres sélectionnés.
+                </p>
+              </div>
+            ) : (
+              reportsBySite.map((siteGroup) => {
+                const siteId = siteGroup.site?.id ?? 'without-site'
+                const siteName = siteGroup.site?.name ?? 'Site non attribué'
+                const totalReports = siteGroup.reportsByType.reduce(
+                  (sum, tg) => sum + tg.reports.length, 0,
+                )
+                const isSiteExpanded = expandedSites.has(siteId)
 
                 return (
-                  <div
-                    key={siteId}
-                    className="overflow-hidden rounded-2xl border bg-card"
-                  >
-                    {/* SITE HEADER */}
+                  <div key={siteId} className="overflow-hidden rounded-2xl border bg-card">
 
+                    {/* EN-TÊTE SITE */}
                     <button
                       type="button"
-                      onClick={() =>
-                        toggleSite(
-                          siteId,
-                        )
-                      }
+                      onClick={() => toggleSite(siteId)}
                       className="flex w-full items-center justify-between gap-4 p-5 text-left transition hover:bg-muted/40"
                     >
                       <div className="flex min-w-0 items-center gap-3">
                         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                          {isSiteExpanded ? (
-                            <ChevronDown className="h-5 w-5" />
-                          ) : (
-                            <ChevronRight className="h-5 w-5" />
-                          )}
+                          {isSiteExpanded
+                            ? <ChevronDown className="h-5 w-5" />
+                            : <ChevronRight className="h-5 w-5" />}
                         </div>
-
                         <div className="min-w-0">
-                          <h3 className="truncate text-base font-semibold">
-                            {siteName}
-                          </h3>
-
+                          <h3 className="truncate text-base font-semibold">{siteName}</h3>
                           <p className="mt-0.5 text-sm text-muted-foreground">
-                            {siteReportCount}{' '}
-                            rapport
-                            {siteReportCount >
-                            1
-                              ? 's'
-                              : ''}
-
-                            {siteGroup
-                              .reportsByType
-                              .length >
-                              0 && (
+                            {totalReports} rapport{totalReports > 1 ? 's' : ''}
+                            {siteGroup.reportsByType.length > 0 && (
                               <>
-                                {' '}
-                                •{' '}
-                                {
-                                  siteGroup
-                                    .reportsByType
-                                    .length
-                                }{' '}
-                                type
-                                {siteGroup
-                                  .reportsByType
-                                  .length >
-                                1
-                                  ? 's'
-                                  : ''}
+                                {' '}•{' '}
+                                {siteGroup.reportsByType.length} type{siteGroup.reportsByType.length > 1 ? 's' : ''}
                               </>
                             )}
                           </p>
                         </div>
                       </div>
-
-                      <Badge variant="secondary">
-                        {siteReportCount}
-                      </Badge>
+                      <Badge variant="secondary">{totalReports}</Badge>
                     </button>
 
-                    {/* SITE CONTENT */}
-
+                    {/* CONTENU SITE */}
                     {isSiteExpanded && (
                       <div className="border-t bg-muted/10 p-4 md:p-5">
-                        {siteGroup.reportsByType
-                          .length === 0 ? (
+                        {siteGroup.reportsByType.length === 0 ? (
                           <div className="rounded-xl border border-dashed bg-background p-8 text-center">
                             <FileText className="mx-auto h-8 w-8 text-muted-foreground/50" />
-
-                            <p className="mt-3 text-sm font-medium">
-                              Aucun rapport reçu
-                            </p>
-
+                            <p className="mt-3 text-sm font-medium">Aucun rapport pour ce site</p>
                             <p className="mt-1 text-xs text-muted-foreground">
-                              Aucun rapport n'est actuellement associé à ce site.
+                              Aucun rapport reçu ne correspond aux filtres actifs.
                             </p>
                           </div>
                         ) : (
                           <div className="space-y-3">
-                            {siteGroup.reportsByType.map(
-                              (typeGroup) => {
-                                const typeId =
-                                  typeGroup
-                                    .type
-                                    ?.id ??
-                                  'without-type'
+                            {siteGroup.reportsByType.map((typeGroup) => {
+                              const typeId = typeGroup.type?.id ?? 'without-type'
+                              const typeKey = `${siteId}-${typeId}`
+                              const typeName = typeGroup.type?.name ?? 'Type non défini'
+                              const isTypeExpanded = expandedTypes.has(typeKey)
 
-                                const typeKey =
-                                  `${siteId}-${typeId}`
-
-                                const typeName =
-                                  typeGroup
-                                    .type
-                                    ?.name ??
-                                  'Type de rapport non défini'
-
-                                const isTypeExpanded =
-                                  expandedTypes.has(
-                                    typeKey,
-                                  )
-
-                                return (
-                                  <div
-                                    key={
-                                      typeKey
-                                    }
-                                    className="overflow-hidden rounded-xl border bg-background"
+                              return (
+                                <div
+                                  key={typeKey}
+                                  className="overflow-hidden rounded-xl border bg-background"
+                                >
+                                  {/* EN-TÊTE TYPE */}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleType(typeKey)}
+                                    className="flex w-full items-center justify-between gap-4 p-4 text-left transition hover:bg-muted/30"
                                   >
-                                    {/* TYPE HEADER */}
-
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        toggleType(
-                                          typeKey,
-                                        )
-                                      }
-                                      className="flex w-full items-center justify-between gap-4 p-4 text-left transition hover:bg-muted/30"
-                                    >
-                                      <div className="flex min-w-0 items-center gap-3">
-                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-                                          {isTypeExpanded ? (
-                                            <ChevronDown className="h-4 w-4" />
-                                          ) : (
-                                            <ChevronRight className="h-4 w-4" />
-                                          )}
-                                        </div>
-
-                                        <div className="min-w-0">
-                                          <p className="font-medium">
-                                            {typeName}
-                                          </p>
-
-                                          <p className="text-xs text-muted-foreground">
-                                            {
-                                              typeGroup
-                                                .reports
-                                                .length
-                                            }{' '}
-                                            rapport
-                                            {typeGroup
-                                              .reports
-                                              .length >
-                                            1
-                                              ? 's'
-                                              : ''}
-                                          </p>
-                                        </div>
+                                    <div className="flex min-w-0 items-center gap-3">
+                                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                                        {isTypeExpanded
+                                          ? <ChevronDown className="h-4 w-4" />
+                                          : <ChevronRight className="h-4 w-4" />}
                                       </div>
-
-                                      <Badge variant="outline">
-                                        {
-                                          typeGroup
-                                            .reports
-                                            .length
-                                        }
-                                      </Badge>
-                                    </button>
-
-                                    {/* TYPE CONTENT */}
-
-                                    {isTypeExpanded && (
-                                      <div className="space-y-3 border-t bg-muted/5 p-3 md:p-4">
-                                        {typeGroup.reports.map(
-                                          (
-                                            report,
-                                          ) =>
-                                            renderReportCard(
-                                              report,
-                                            ),
-                                        )}
+                                      <div className="min-w-0">
+                                        <p className="font-medium">{typeName}</p>
+                                        <p className="text-xs text-muted-foreground">
+                                          {typeGroup.reports.length} rapport{typeGroup.reports.length > 1 ? 's' : ''}
+                                        </p>
                                       </div>
-                                    )}
-                                  </div>
-                                )
-                              },
-                            )}
+                                    </div>
+                                    <Badge variant="outline">{typeGroup.reports.length}</Badge>
+                                  </button>
+
+                                  {/* RAPPORTS */}
+                                  {isTypeExpanded && (
+                                    <div className="space-y-3 border-t bg-muted/5 p-3 md:p-4">
+                                      {typeGroup.reports.map((report) =>
+                                        renderReportCard(report),
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
                           </div>
                         )}
                       </div>
                     )}
                   </div>
                 )
-              },
+              })
             )}
           </div>
         ) : currentReports.length === 0 ? (
@@ -2144,11 +1874,11 @@ export default function ManagerReportsPage() {
 
                   <DialogDescription>
                     {viewMode ===
-                    'received'
+                      'received'
                       ? `Rapport envoyé par ${getEmployeeName(
-                          selectedReport.employee ??
-                            selectedReport.author,
-                        )}`
+                        selectedReport.employee ??
+                        selectedReport.author,
+                      )}`
                       : 'Votre rapport'}
                   </DialogDescription>
                 </DialogHeader>
@@ -2160,19 +1890,19 @@ export default function ManagerReportsPage() {
                   <div className="grid gap-4 rounded-xl border p-4 sm:grid-cols-2">
                     {viewMode ===
                       'received' && (
-                      <div>
-                        <p className="text-xs font-medium text-muted-foreground">
-                          Employé
-                        </p>
+                        <div>
+                          <p className="text-xs font-medium text-muted-foreground">
+                            Employé
+                          </p>
 
-                        <p className="mt-1 font-medium">
-                          {getEmployeeName(
-                            selectedReport.employee ??
+                          <p className="mt-1 font-medium">
+                            {getEmployeeName(
+                              selectedReport.employee ??
                               selectedReport.author,
-                          )}
-                        </p>
-                      </div>
-                    )}
+                            )}
+                          </p>
+                        </div>
+                      )}
 
                     <div>
                       <p className="text-xs font-medium text-muted-foreground">
@@ -2195,13 +1925,13 @@ export default function ManagerReportsPage() {
                         <Badge
                           className={
                             statusClasses[
-                              selectedReport.status
+                            selectedReport.status
                             ]
                           }
                         >
                           {
                             statusLabels[
-                              selectedReport.status
+                            selectedReport.status
                             ]
                           }
                         </Badge>
@@ -2258,9 +1988,9 @@ export default function ManagerReportsPage() {
 
                     {selectedReport
                       .report_attachments &&
-                    selectedReport
-                      .report_attachments
-                      .length > 0 ? (
+                      selectedReport
+                        .report_attachments
+                        .length > 0 ? (
                       <div className="space-y-2">
                         {selectedReport.report_attachments.map(
                           renderAttachment,
@@ -2422,58 +2152,58 @@ export default function ManagerReportsPage() {
 
                 {newFiles.length >
                   0 && (
-                  <div className="space-y-2">
-                    {newFiles.map(
-                      (
-                        file,
-                        index,
-                      ) => (
-                        <div
-                          key={`${file.name}-${index}`}
-                          className="flex items-center justify-between rounded-lg border p-3"
-                        >
-                          <div className="flex min-w-0 items-center gap-3">
-                            <File className="h-4 w-4 shrink-0" />
-
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">
-                                {file.name}
-                              </p>
-
-                              <p className="text-xs text-muted-foreground">
-                                {formatFileSize(
-                                  file.size,
-                                )}
-                              </p>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            className="text-muted-foreground hover:text-foreground"
-                            onClick={() =>
-                              setNewFiles(
-                                (
-                                  current,
-                                ) =>
-                                  current.filter(
-                                    (
-                                      _,
-                                      i,
-                                    ) =>
-                                      i !==
-                                      index,
-                                  ),
-                              )
-                            }
+                    <div className="space-y-2">
+                      {newFiles.map(
+                        (
+                          file,
+                          index,
+                        ) => (
+                          <div
+                            key={`${file.name}-${index}`}
+                            className="flex items-center justify-between rounded-lg border p-3"
                           >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                )}
+                            <div className="flex min-w-0 items-center gap-3">
+                              <File className="h-4 w-4 shrink-0" />
+
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium">
+                                  {file.name}
+                                </p>
+
+                                <p className="text-xs text-muted-foreground">
+                                  {formatFileSize(
+                                    file.size,
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              className="text-muted-foreground hover:text-foreground"
+                              onClick={() =>
+                                setNewFiles(
+                                  (
+                                    current,
+                                  ) =>
+                                    current.filter(
+                                      (
+                                        _,
+                                        i,
+                                      ) =>
+                                        i !==
+                                        index,
+                                    ),
+                                )
+                              }
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
               </div>
             </div>
 
@@ -2606,6 +2336,6 @@ export default function ManagerReportsPage() {
           </DialogContent>
         </Dialog>
       </div>
-    </DashboardLayout>
+    </DashboardLayout >
   )
 }
