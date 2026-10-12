@@ -17,6 +17,8 @@ import Dashadmin from "./pages/Dasboard/admin";
 import Dashmanager from "./pages/Dasboard/manager";
 import Dashemployer from "./pages/Dasboard/employer";
 import ManagerSites from "./pages/Dasboard/ManagerSites";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 
 import AdminReports from "./pages/Reports/Admin";
 import ManagerReports from "./pages/Reports/Manager";
@@ -42,6 +44,8 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/profile" element={<Profile />} />
 

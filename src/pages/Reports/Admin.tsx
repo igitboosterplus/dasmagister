@@ -387,9 +387,9 @@ export default function AdminReports() {
         report.title.toLowerCase().includes(query) ||
         report.description?.toLowerCase().includes(query) ||
         employeeName.toLowerCase().includes(query) ||
-        structure?.name.toLowerCase().includes(query) ||
-        site?.name.toLowerCase().includes(query) ||
-        report.report_types?.name.toLowerCase().includes(query)
+        (structure?.name || '').toLowerCase().includes(query) ||
+        (site?.name || '').toLowerCase().includes(query) ||
+        (report.report_types?.name || '').toLowerCase().includes(query)
 
       return (
         matchesStructure &&

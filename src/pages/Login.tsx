@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -1088,11 +1088,19 @@ export default function Login() {
                 space-y-2
               ">
 
-                <Label htmlFor="password">
-
-                  Mot de passe
-
-                </Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">
+                    Mot de passe
+                  </Label>
+                  {!isSignUp && (
+                    <Link
+                      to="/forgot-password"
+                      className="text-sm font-medium text-primary hover:underline"
+                    >
+                      Mot de passe oublié ?
+                    </Link>
+                  )}
+                </div>
 
 
                 <Input

@@ -2720,7 +2720,7 @@ export default function Employees() {
               disabled={
                 editLoading ||
                 !editingEmployee ||
-                selectedSiteIds.length === 0
+                (selectedSiteIds.length === 0 && selectedRole !== 'manager')
               }
             >
 

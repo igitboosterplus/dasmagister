@@ -10,6 +10,7 @@ import {
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { Database } from '@/integrations/supabase/types';
+import { PushNotificationService } from '@/services/pushNotifications';
 
 export type AppRole =
   Database['public']['Enums']['employee_role'];
@@ -53,7 +54,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
 }
 
-const AuthContext = createContext< AuthContextType | undefined >(
+const AuthContext = createContext<AuthContextType | undefined>(
   undefined
 );
 
@@ -671,7 +672,11 @@ export function AuthProvider({
    */
   const signOut = async () => {
     try {
+      // Unsubscribe from Push Notifications explicitly to clean up backend linking
+      await PushNotificationService.unsubscribe();
       await supabase.auth.signOut();
+    } catch (e) {
+      console.error('Logout unsubscription failed: ', e);
     } finally {
       setUser(null);
       setSession(null);

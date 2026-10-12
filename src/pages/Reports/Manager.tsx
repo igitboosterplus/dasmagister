@@ -75,6 +75,7 @@ interface Site {
   name: string
   structure_id?: string | null
   is_active?: boolean
+  structures?: { id: string; name: string } | null
 }
 
 interface ReportType {
@@ -386,17 +387,12 @@ export default function ManagerReportsPage() {
       }
 
       try {
-        /* ---------------------------------------------------
-           EMPLOYEES
-        --------------------------------------------------- */
-
         const {
           data: employeeData,
           error: employeeError,
         } = await supabase
           .from('employees')
           .select('id, auth_user_id, first_name, last_name, structure_id, is_active')
-          .eq('structure_id', profile.structure_id)
           .order('last_name', { ascending: true })
 
         if (employeeError) throw employeeError
@@ -451,7 +447,7 @@ export default function ManagerReportsPage() {
            SITES
 
            IMPORTANT :
-           On charge TOUS les sites actifs de la structure.
+           On charge TOUS les sites actifs de la/les structure(s).
            Les sites sont la source de l'arborescence.
         --------------------------------------------------- */
 
@@ -464,9 +460,9 @@ export default function ManagerReportsPage() {
             id,
             name,
             structure_id,
-            is_active
+            is_active,
+            structures(id, name)
           `)
-          .eq('structure_id', profile.structure_id)
           .eq('is_active', true)
           .order('name', {
             ascending: true,
@@ -500,8 +496,7 @@ export default function ManagerReportsPage() {
         /* ---------------------------------------------------
            REPORTS REÇUS
            Rapports dont le destinataire est le manager courant.
-           Un rapport appartient à un et un seul employé
-           de la structure.
+           Un rapport appartient à un et un seul employé.
         --------------------------------------------------- */
 
         const {
@@ -539,7 +534,6 @@ export default function ManagerReportsPage() {
               created_at
             )
           `)
-          .eq('structure_id', profile.structure_id)
           .or(
             `recipient_employee_id.eq.${profile.id},` +
             `recipient_id.eq.${profile.id}`,
@@ -765,7 +759,8 @@ export default function ManagerReportsPage() {
       const typeName = report.report_types?.name?.toLowerCase() ?? ''
       const title = report.title?.toLowerCase() ?? ''
       const description = report.description?.toLowerCase() ?? ''
-      const siteName = report.site?.name?.toLowerCase() ?? ''
+      const siteName = (report.site?.name ?? '').toLowerCase()
+      const structureName = (report.site?.structures?.name ?? '').toLowerCase()
 
       const matchesSearch =
         !normalizedSearch ||
@@ -773,7 +768,8 @@ export default function ManagerReportsPage() {
         description.includes(normalizedSearch) ||
         employeeName.toLowerCase().includes(normalizedSearch) ||
         typeName.includes(normalizedSearch) ||
-        siteName.includes(normalizedSearch)
+        siteName.includes(normalizedSearch) ||
+        structureName.includes(normalizedSearch)
 
       const matchesStatus =
         statusFilter === 'all' || report.status === statusFilter
@@ -1336,7 +1332,7 @@ export default function ManagerReportsPage() {
 
                 {report.site?.name && (
                   <span>
-                    Site : {report.site.name}
+                    Site : {report.site.name}{report.site.structures?.name ? ` - ${report.site.structures.name}` : ''}
                   </span>
                 )}
               </div>
@@ -1688,7 +1684,7 @@ export default function ManagerReportsPage() {
                 <SelectItem value="all">Tous les sites</SelectItem>
                 {sites.map((site) => (
                   <SelectItem key={site.id} value={site.id}>
-                    {site.name}
+                    {site.name}{site.structures?.name ? ` - ${site.structures.name}` : ''}
                   </SelectItem>
                 ))}
                 <SelectItem value="without-site">Sans site</SelectItem>
@@ -1739,7 +1735,9 @@ export default function ManagerReportsPage() {
             ) : (
               reportsBySite.map((siteGroup) => {
                 const siteId = siteGroup.site?.id ?? 'without-site'
-                const siteName = siteGroup.site?.name ?? 'Site non attribué'
+                const siteName = siteGroup.site
+                  ? `${siteGroup.site.name}${siteGroup.site.structures?.name ? ` - ${siteGroup.site.structures.name}` : ''}`
+                  : 'Site non attribué'
                 const totalReports = siteGroup.reportsByType.reduce(
                   (sum, tg) => sum + tg.reports.length, 0,
                 )

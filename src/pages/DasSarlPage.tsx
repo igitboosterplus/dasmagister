@@ -26,7 +26,7 @@ export default function DasSarlPage() {
                     </p>
                 </div>
 
-                {role === 'manager' || role === 'admin' ? (
+                {role === 'manager' ? (
                     <DasSarlManagerFeatures structureId={profile.structure_id} />
                 ) : (
                     <DasSarlEmployeeFeatures employeeId={profile.id} structureId={profile.structure_id} />

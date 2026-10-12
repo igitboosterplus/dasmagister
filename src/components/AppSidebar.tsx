@@ -91,8 +91,8 @@ const navItems: NavItem[] = [
     label: 'Espace Das-Sarl',
     icon: Building2,
     path: '/dassarl',
-    roles: ['manager', 'employee', 'admin'],
-    // requiresDasSarlStructure: true,
+    roles: ['manager', 'employee'],
+    requiresDasSarlStructure: true,
   }
 ];
 

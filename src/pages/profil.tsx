@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
+import { NotificationPreferences } from '@/components/NotificationPreferences';
 
 import {
   Card,
@@ -2339,12 +2340,14 @@ export default function Profile() {
 
           </Card>
 
+          <div className="mt-8">
+            <NotificationPreferences />
+          </div>
+
         </div>
 
       </div>
 
     </DashboardLayout>
-
   );
-
 }
