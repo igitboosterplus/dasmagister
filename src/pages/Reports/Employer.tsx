@@ -3,6 +3,10 @@ import DashboardLayout from '@/components/DashboardLayout'
 import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/hooks/use-toast'
 import { supabase } from '@/integrations/supabase/client'
+import {
+  getFriendlyReportErrorMessage,
+  validateReportFile,
+} from './reportUtils'
 
 import {
   AlertCircle,
@@ -220,6 +224,7 @@ export default function EmployerReports() {
 
   const [reports, setReports] = useState<Report[]>([])
   const [reportTypes, setReportTypes] = useState<ReportType[]>([])
+  const [reportTypesLoading, setReportTypesLoading] = useState(true)
 
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -256,6 +261,7 @@ export default function EmployerReports() {
    * ============================================================
    */
   const loadReportTypes = useCallback(async () => {
+    setReportTypesLoading(true)
     try {
       const { data, error } = await supabase
         .from('report_types')
@@ -283,6 +289,8 @@ export default function EmployerReports() {
           'Impossible de charger les types de rapports.',
         variant: 'destructive',
       })
+    } finally {
+      setReportTypesLoading(false)
     }
   }, [toast])
 
@@ -499,13 +507,37 @@ export default function EmployerReports() {
       return
     }
 
-    setNewReport((current) => ({
-      ...current,
-      files: [
-        ...current.files,
-        ...selectedFiles,
-      ],
-    }))
+    const validFiles: File[] = []
+    const errorMessages: string[] = []
+
+    for (const file of selectedFiles) {
+      const validation = validateReportFile(file)
+      if (validation.valid) {
+        validFiles.push(file)
+      } else {
+        errorMessages.push(
+          validation.error || `Le fichier "${file.name}" est invalide.`,
+        )
+      }
+    }
+
+    if (errorMessages.length > 0) {
+      toast({
+        title: 'Pièce(s) jointe(s) non valide(s)',
+        description: errorMessages.join(' | '),
+        variant: 'destructive',
+      })
+    }
+
+    if (validFiles.length > 0) {
+      setNewReport((current) => ({
+        ...current,
+        files: [
+          ...current.files,
+          ...validFiles,
+        ],
+      }))
+    }
   }
 
   const removeFile = (index: number) => {
@@ -554,6 +586,18 @@ export default function EmployerReports() {
         title: 'Information',
         description:
           'Votre compte n’est associé à aucune structure.',
+        variant: 'destructive',
+      })
+
+      return
+    }
+
+    if (reportTypes.length === 0) {
+      toast({
+        title: 'Information',
+        description:
+          'Aucun type de rapport n’est configuré pour votre structure. Veuillez contacter votre responsable.',
+        variant: 'destructive',
       })
 
       return
@@ -588,10 +632,7 @@ export default function EmployerReports() {
 
     try {
       /**
-       * Création du rapport.
-       *
-       * La RPC doit être responsable de déterminer
-       * le destinataire selon les règles métier.
+       * Création du rapport via la RPC serveur.
        */
       const {
         data: reportId,
@@ -616,7 +657,7 @@ export default function EmployerReports() {
 
       if (!reportId) {
         throw new Error(
-          'Le rapport n’a pas pu être créé.',
+          'Le rapport n’a pas pu être créé (aucun identifiant retourné).',
         )
       }
 
@@ -624,72 +665,82 @@ export default function EmployerReports() {
         reportId as string
 
       /**
-       * Upload des pièces jointes.
+       * Upload des pièces jointes avec résilience aux échecs partiels.
        */
+      let attachmentFailures = 0
+
       for (const file of newReport.files) {
-        const extension =
-          file.name.includes('.')
-            ? file.name
-              .split('.')
-              .pop()
-              ?.toLowerCase() || 'bin'
-            : 'bin'
+        try {
+          const extension =
+            file.name.includes('.')
+              ? file.name
+                .split('.')
+                .pop()
+                ?.toLowerCase() || 'bin'
+              : 'bin'
 
-        const path = [
-          profile.structure_id,
-          profile.id,
-          createdReportId,
-          `${crypto.randomUUID()}.${extension}`,
-        ].join('/')
+          const path = [
+            profile.structure_id,
+            profile.id,
+            createdReportId,
+            `${crypto.randomUUID()}.${extension}`,
+          ].join('/')
 
-        const {
-          error: uploadError,
-        } = await supabase.storage
-          .from(REPORT_BUCKET)
-          .upload(
-            path,
-            file,
-            {
-              contentType:
-                file.type ||
-                'application/octet-stream',
-
-              upsert: false,
-            },
-          )
-
-        if (uploadError) {
-          throw uploadError
-        }
-
-        uploadedPaths.push(path)
-
-        const {
-          error: attachmentError,
-        } = await supabase
-          .from('report_attachments')
-          .insert({
-            report_id:
-              createdReportId,
-
-            file_name:
-              file.name,
-
-            file_path:
+          const {
+            error: uploadError,
+          } = await supabase.storage
+            .from(REPORT_BUCKET)
+            .upload(
               path,
+              file,
+              {
+                contentType:
+                  file.type ||
+                  'application/octet-stream',
 
-            file_url:
-              null,
+                upsert: false,
+              },
+            )
 
-            mime_type:
-              file.type || null,
+          if (uploadError) {
+            console.error('Erreur upload:', uploadError)
+            attachmentFailures++
+            continue
+          }
 
-            file_size:
-              file.size,
-          })
+          uploadedPaths.push(path)
 
-        if (attachmentError) {
-          throw attachmentError
+          const {
+            error: attachmentError,
+          } = await supabase
+            .from('report_attachments')
+            .insert({
+              report_id:
+                createdReportId,
+
+              file_name:
+                file.name,
+
+              file_path:
+                path,
+
+              file_url:
+                null,
+
+              mime_type:
+                file.type || null,
+
+              file_size:
+                file.size,
+            })
+
+          if (attachmentError) {
+            console.error('Erreur attachment insert:', attachmentError)
+            attachmentFailures++
+          }
+        } catch (attErr) {
+          console.error('Erreur pièce jointe:', attErr)
+          attachmentFailures++
         }
       }
 
@@ -698,11 +749,18 @@ export default function EmployerReports() {
 
       await loadReports()
 
-      toast({
-        title: 'Rapport transmis',
-        description:
-          'Votre rapport a été transmis avec succès.',
-      })
+      if (attachmentFailures > 0) {
+        toast({
+          title: 'Rapport transmis avec avertissement',
+          description: `Votre rapport a bien été créé (Réf: ${createdReportId.slice(0, 8)}), mais ${attachmentFailures} pièce(s) n'ont pas pu être téléversées.`,
+        })
+      } else {
+        toast({
+          title: 'Rapport transmis',
+          description:
+            'Votre rapport a été transmis avec succès.',
+        })
+      }
     } catch (error) {
       console.error(
         'Erreur création rapport:',
@@ -710,30 +768,22 @@ export default function EmployerReports() {
       )
 
       /**
-       * Nettoyage des fichiers déjà uploadés
-       * en cas d'erreur.
+       * Nettoyage des fichiers si le rapport n'a pas pu être créé
        */
-      if (uploadedPaths.length > 0) {
-        const {
-          error: cleanupError,
-        } = await supabase.storage
+      if (!createdReportId && uploadedPaths.length > 0) {
+        await supabase.storage
           .from(REPORT_BUCKET)
           .remove(uploadedPaths)
-
-        if (cleanupError) {
-          console.error(
-            'Erreur nettoyage fichiers:',
-            cleanupError,
+          .catch((cleanupErr) =>
+            console.error('Erreur nettoyage:', cleanupErr),
           )
-        }
       }
 
+      const friendlyMessage = getFriendlyReportErrorMessage(error)
+
       toast({
-        title: 'Erreur',
-        description:
-          error instanceof Error
-            ? error.message
-            : 'Impossible de transmettre le rapport.',
+        title: 'Erreur de transmission',
+        description: friendlyMessage,
         variant: 'destructive',
       })
     } finally {
@@ -1281,6 +1331,7 @@ export default function EmployerReports() {
 
               <Select
                 value={newReport.typeId}
+                disabled={reportTypesLoading || reportTypes.length === 0}
                 onValueChange={(value) =>
                   setNewReport(
                     (current) => ({
@@ -1291,7 +1342,13 @@ export default function EmployerReports() {
                 }
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Sélectionner un type" />
+                  <SelectValue
+                    placeholder={
+                      reportTypesLoading
+                        ? 'Chargement des types...'
+                        : 'Sélectionner un type'
+                    }
+                  />
                 </SelectTrigger>
 
                 <SelectContent>
@@ -1307,6 +1364,12 @@ export default function EmployerReports() {
                   )}
                 </SelectContent>
               </Select>
+
+              {!reportTypesLoading && reportTypes.length === 0 && (
+                <p className="text-xs text-amber-600">
+                  Aucun type de rapport n’est configuré pour votre structure. Veuillez contacter votre responsable.
+                </p>
+              )}
             </div>
 
             {/* TITLE */}
@@ -1467,7 +1530,13 @@ export default function EmployerReports() {
             <Button
               type="button"
               onClick={handleSubmit}
-              disabled={submitting}
+              disabled={
+                submitting ||
+                reportTypesLoading ||
+                reportTypes.length === 0 ||
+                !newReport.typeId ||
+                !newReport.title.trim()
+              }
               className="gap-2"
             >
               {submitting ? (

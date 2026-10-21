@@ -21,6 +21,7 @@ import ManagerSites from "./pages/Dasboard/ManagerSites";
 import AdminReports from "./pages/Reports/Admin";
 import ManagerReports from "./pages/Reports/Manager";
 import EmployerReports from "./pages/Reports/Employer";
+import ReportsRedirect from "./pages/Reports/ReportsRedirect";
 
 
 import ManagerAttendanceReview from './pages/managerAttence';
@@ -56,6 +57,7 @@ const App = () => (
             <Route path="/employees" element={<Employees />} />
 
 
+            <Route path="/reports" element={<ReportsRedirect />} />
             <Route path="/reports/admin" element={<AdminReports />} />
             <Route path="/reports/manager" element={<ManagerReports />} />
             <Route path="/reports/employer" element={<EmployerReports />} />
