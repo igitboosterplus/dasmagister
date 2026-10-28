@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
@@ -27,6 +28,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   ShieldAlert,
+  Eye,
 } from 'lucide-react';
 
 import {
@@ -107,6 +109,9 @@ interface EmployeeItem {
   responsible_site_id: string | null;
 
   is_active: boolean;
+  account_status: string;
+  rejection_reason: string | null;
+  created_at: string | null;
   deactivated_at: string | null;
 }
 
@@ -122,6 +127,7 @@ interface PositionItem {
 export default function Employees() {
   const { role, profile } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   // ==========================================================
   // DATA
@@ -398,6 +404,15 @@ export default function Employees() {
           is_active:
             employee.is_active,
 
+          account_status:
+            employee.account_status || (employee.is_active ? 'active' : 'pending'),
+
+          rejection_reason:
+            employee.rejection_reason || null,
+
+          created_at:
+            employee.created_at || null,
+
           deactivated_at:
             employee.deactivated_at || null,
         };
@@ -463,6 +478,9 @@ export default function Employees() {
             phone,
             structure_id,
             is_active,
+            account_status,
+            rejection_reason,
+            created_at,
 
             employee_roles (
               role
@@ -493,8 +511,7 @@ export default function Employees() {
               )
             )
           `)
-          .eq('is_active', true)
-          .eq('employee_sites.is_active', true)
+          .in('account_status', ['active', 'pending'])
           .order('first_name');
 
         // ----------------------------------------------------
@@ -649,6 +666,107 @@ export default function Employees() {
       setStructures([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleApproveRegistration = async (emp: EmployeeItem) => {
+    try {
+      setActionLoading(true);
+      const { error: rpcError } = await supabase.rpc('approve_registration', {
+        p_employee_id: emp.id,
+      });
+
+      if (rpcError) {
+        console.warn('RPC approve_registration fallback direct update:', rpcError);
+        const { error: updateError } = await supabase
+          .from('employees')
+          .update({
+            account_status: 'active',
+            is_active: true,
+            approved_by: profile?.id,
+            approved_at: new Date().toISOString(),
+          })
+          .eq('id', emp.id);
+
+        if (updateError) throw updateError;
+
+        await supabase.from('notifications').insert({
+          recipient_employee_id: emp.id,
+          type: 'registration_approved',
+          title: 'Inscription validée !',
+          message: 'Votre compte a été validé et activé avec succès par votre responsable.',
+          entity_type: 'employee',
+          entity_id: emp.id,
+        });
+      }
+
+      toast({
+        title: 'Inscription validée !',
+        description: `${emp.first_name} ${emp.last_name} a été activé(e) avec succès.`,
+      });
+
+      await fetchEmployees();
+    } catch (err: any) {
+      console.error('Erreur validation inscription:', err);
+      toast({
+        title: 'Erreur',
+        description: err.message || 'Impossible de valider l’inscription.',
+        variant: 'destructive',
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRejectPending = async (emp: EmployeeItem) => {
+    const reason = window.prompt("Motif du refus de l'inscription :", "Inscription non conforme ou non autorisée.");
+    if (reason === null) return;
+
+    try {
+      setActionLoading(true);
+      const { error: rpcError } = await supabase.rpc('reject_registration', {
+        p_employee_id: emp.id,
+        p_reason: reason || 'Non précisé',
+      });
+
+      if (rpcError) {
+        console.warn('RPC reject_registration fallback direct update:', rpcError);
+        const { error: updateError } = await supabase
+          .from('employees')
+          .update({
+            account_status: 'rejected',
+            is_active: false,
+            rejection_reason: reason || 'Non précisé',
+          })
+          .eq('id', emp.id);
+
+        if (updateError) throw updateError;
+
+        await supabase.from('notifications').insert({
+          recipient_employee_id: emp.id,
+          type: 'registration_rejected',
+          title: 'Inscription refusée',
+          message: `Votre demande d'inscription a été refusée : ${reason || 'Non précisé'}`,
+          entity_type: 'employee',
+          entity_id: emp.id,
+        });
+      }
+
+      toast({
+        title: 'Inscription refusée',
+        description: 'La décision a été enregistrée et l’utilisateur en a été notifié.',
+      });
+
+      await fetchEmployees();
+    } catch (err: any) {
+      console.error('Erreur rejet inscription:', err);
+      toast({
+        title: 'Erreur',
+        description: err.message || 'Impossible de refuser l’inscription.',
+        variant: 'destructive',
+      });
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -1885,16 +2003,25 @@ export default function Employees() {
 
                                         <div>
 
-                                          <span className="text-sm font-medium">
+                                          <button
+                                            type="button"
+                                            onClick={() => navigate(`/employees/${employee.id}`)}
+                                            className="text-sm font-medium text-left hover:text-primary hover:underline transition-colors cursor-pointer block"
+                                            title={`Voir la fiche et les pointages de ${employee.first_name} ${employee.last_name}`}
+                                          >
                                             {employee.first_name}{' '}
                                             {employee.last_name}
-                                          </span>
+                                          </button>
 
-                                          {!employee.is_active && (
+                                          {employee.account_status === 'pending' ? (
+                                            <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 mt-0.5">
+                                              En attente de validation
+                                            </div>
+                                          ) : !employee.is_active ? (
                                             <div className="text-xs text-destructive mt-0.5">
                                               Compte désactivé
                                             </div>
-                                          )}
+                                          ) : null}
 
                                         </div>
 
@@ -2035,6 +2162,15 @@ export default function Employees() {
 
                                             <DropdownMenuItem
                                               onClick={() =>
+                                                navigate(`/employees/${employee.id}`)
+                                              }
+                                            >
+                                              <Eye className="h-4 w-4 mr-2" />
+                                              Fiche & Pointages
+                                            </DropdownMenuItem>
+
+                                            <DropdownMenuItem
+                                              onClick={() =>
                                                 openEditDialog(
                                                   employee
                                                 )
@@ -2043,6 +2179,26 @@ export default function Employees() {
                                               <Pencil className="h-4 w-4 mr-2" />
                                               Modifier
                                             </DropdownMenuItem>
+
+                                            {employee.account_status === 'pending' && (
+                                              <>
+                                                <DropdownMenuSeparator />
+                                                <DropdownMenuItem
+                                                  className="text-emerald-600 focus:text-emerald-600 font-medium"
+                                                  onClick={() => handleApproveRegistration(employee)}
+                                                >
+                                                  <UserCheck className="h-4 w-4 mr-2 text-emerald-600" />
+                                                  Valider l'inscription
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                  className="text-destructive focus:text-destructive font-medium"
+                                                  onClick={() => handleRejectPending(employee)}
+                                                >
+                                                  <UserX className="h-4 w-4 mr-2 text-destructive" />
+                                                  Refuser l'inscription
+                                                </DropdownMenuItem>
+                                              </>
+                                            )}
 
                                             {!showInactive &&
                                               employee.is_active && (

@@ -8,6 +8,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Attendance from "./pages/Attendance";
 import Employees from "./pages/Employees";
+import EmployeeInfo from "./pages/EmployeeInfo";
 
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
@@ -30,6 +31,7 @@ import ResponsableSite from "./pages/Responsablesite";
 
 import Profile from "./pages/profil";
 import DasSarlPage from "./pages/DasSarlPage";
+import MagisterePage from "./pages/MagisterePage";
 
 const queryClient = new QueryClient();
 
@@ -58,6 +60,7 @@ const App = () => (
 
             <Route path="/attendance" element={<Attendance />} />
             <Route path="/employees" element={<Employees />} />
+            <Route path="/employees/:id" element={<EmployeeInfo />} />
 
 
             <Route path="/reports/admin" element={<AdminReports />} />
@@ -65,6 +68,7 @@ const App = () => (
             <Route path="/reports/employer" element={<EmployerReports />} />
 
             <Route path="/dassarl" element={<DasSarlPage />} />
+            <Route path="/magistere" element={<MagisterePage />} />
 
             <Route path="/settings" element={<Settings />} />
             <Route path="/manager/attendance" element={<ManagerAttendanceReview />} />

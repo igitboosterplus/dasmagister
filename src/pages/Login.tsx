@@ -749,7 +749,7 @@ export default function Login() {
       </div>
     );
   }
-  { { console.log(structures); } }
+  
 
   // ==========================================================
   // FORMULAIRE DE CONNEXION / INSCRIPTION

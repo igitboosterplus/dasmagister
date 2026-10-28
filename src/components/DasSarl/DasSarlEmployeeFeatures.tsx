@@ -171,7 +171,7 @@ function EmployeeAbsencesTab({ employeeId, structureId }: { employeeId: string, 
         const { error } = await supabase.from('employee_absences').insert({
             employee_id: employeeId,
             structure_id: structureId,
-            type: formData.type,
+            type: formData.type as any,
             start_date: formData.start_date,
             end_date: formData.end_date,
             reason: formData.reason,

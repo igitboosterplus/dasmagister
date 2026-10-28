@@ -52,6 +52,7 @@ interface AuthContextType {
   ) => Promise<{ error: Error | null }>;
 
   signOut: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(
@@ -685,6 +686,12 @@ export function AuthProvider({
     }
   };
 
+  const refreshProfile = async () => {
+    if (user?.id) {
+      await fetchProfileAndRole(user.id);
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -696,6 +703,7 @@ export function AuthProvider({
         signIn,
         signUp,
         signOut,
+        refreshProfile,
       }}
     >
       {children}
