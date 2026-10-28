@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import DashboardLayout from '@/components/DashboardLayout'
+import { useAuth } from '@/hooks/useAuth'
 import { useToast } from '@/hooks/use-toast'
 import { supabase } from '@/integrations/supabase/client'
+import {
+  REPORT_STATUS_LABELS,
+  REPORT_STATUS_CLASSES,
+  type ReportStatus,
+} from './reportUtils'
 
 import {
   Building2,
@@ -41,15 +48,6 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 
-type ReportStatus =
-  | 'draft'
-  | 'submitted'
-  | 'received'
-  | 'forwarded'
-  | 'reviewed'
-  | 'archived'
-  | 'rejected'
-
 interface Structure {
   id: string
   name: string
@@ -64,6 +62,14 @@ interface Site {
   city_id: string | null
   type: string | null
   is_active: boolean
+}
+
+interface EmployeeSite {
+  id: string
+  employee_id: string
+  site_id: string
+  is_active: boolean
+  is_responsible: boolean
 }
 
 interface Employee {
@@ -117,25 +123,8 @@ interface Report {
 
 const REPORT_BUCKET = 'reports'
 
-const STATUS_LABELS: Record<ReportStatus, string> = {
-  draft: 'Brouillon',
-  submitted: 'Soumis',
-  received: 'Reçu',
-  forwarded: 'Transmis',
-  reviewed: 'Examiné',
-  archived: 'Archivé',
-  rejected: 'Rejeté',
-}
-
-const STATUS_CLASSES: Record<ReportStatus, string> = {
-  draft: 'bg-slate-100 text-slate-700 border-slate-200',
-  submitted: 'bg-blue-50 text-blue-700 border-blue-200',
-  received: 'bg-indigo-50 text-indigo-700 border-indigo-200',
-  forwarded: 'bg-violet-50 text-violet-700 border-violet-200',
-  reviewed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  archived: 'bg-gray-100 text-gray-700 border-gray-200',
-  rejected: 'bg-red-50 text-red-700 border-red-200',
-}
+const STATUS_LABELS = REPORT_STATUS_LABELS
+const STATUS_CLASSES = REPORT_STATUS_CLASSES
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '—'
@@ -179,7 +168,10 @@ function getFileIcon(file: Attachment) {
 }
 
 export default function AdminReports() {
+  const { role, loading: authLoading } = useAuth()
+  const navigate = useNavigate()
   const { toast } = useToast()
+
   const [structures, setStructures] = useState<Structure[]>([])
   const [sites, setSites] = useState<Site[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -215,6 +207,13 @@ export default function AdminReports() {
 
   const [downloading, setDownloading] = useState<string | null>(null)
 
+  // Sécurité : redirection si l'utilisateur connecté n'a pas le rôle admin
+  useEffect(() => {
+    if (!authLoading && role && role !== 'admin') {
+      navigate('/reports', { replace: true })
+    }
+  }, [authLoading, role, navigate])
+
   const loadData = useCallback(async () => {
     setLoading(true)
 
@@ -236,7 +235,6 @@ export default function AdminReports() {
           .select(
             'id, name, structure_id, city_id, type, is_active',
           )
-          .eq('is_active', true)
           .order('name'),
 
         supabase
@@ -244,7 +242,6 @@ export default function AdminReports() {
           .select(
             'id, first_name, last_name, structure_id, site_id, service_id, position_id, is_active',
           )
-          .eq('is_active', true)
           .order('last_name'),
 
         supabase
@@ -304,7 +301,9 @@ export default function AdminReports() {
       )
       setReportTypes(typesResult.data || [])
 
-      const structureState: Record<string, boolean> = {}
+      const structureState: Record<string, boolean> = {
+        'unassigned-structure': true,
+      }
 
         ; (structuresResult.data || []).forEach((structure) => {
           structureState[structure.id] = true
@@ -313,41 +312,55 @@ export default function AdminReports() {
       setExpandedStructures(structureState)
     } catch (error) {
       console.error('Erreur chargement administration:', error)
+      toast({
+        title: 'Erreur',
+        description: 'Impossible de charger les données des rapports.',
+        variant: 'destructive',
+      })
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [toast])
 
   useEffect(() => {
     loadData()
   }, [loadData])
 
-  const getEmployee = (report: Report) => {
-    const employeeId =
-      report.author_employee_id || report.employee_id
+  const getEmployee = useCallback(
+    (report: Report) => {
+      const employeeId =
+        report.author_employee_id || report.employee_id
 
-    return employees.find((employee) => employee.id === employeeId)
-  }
+      return employees.find((employee) => employee.id === employeeId)
+    },
+    [employees],
+  )
 
-  const getStructure = (report: Report) => {
-    const employee = getEmployee(report)
+  const getReportStructureId = useCallback(
+    (report: Report) => {
+      if (report.structure_id) return report.structure_id
+      const employee = getEmployee(report)
+      return employee?.structure_id || null
+    },
+    [getEmployee],
+  )
 
-    return structures.find(
-      (structure) =>
-        structure.id ===
-        (report.structure_id || employee?.structure_id),
-    )
-  }
+  const getStructure = useCallback(
+    (report: Report) => {
+      const structureId = getReportStructureId(report)
+      if (!structureId) return undefined
+      return structures.find((s) => s.id === structureId)
+    },
+    [getReportStructureId, structures],
+  )
 
-  const getSite = (report: Report) => {
-    const employee = getEmployee(report)
-
-    return sites.find(
-      (site) =>
-        site.id ===
-        (report.site_id || employee?.site_id),
-    )
-  }
+  const getSite = useCallback(
+    (report: Report) => {
+      if (!report.site_id) return undefined
+      return sites.find((site) => site.id === report.site_id)
+    },
+    [sites],
+  )
 
   const filteredReports = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -361,10 +374,8 @@ export default function AdminReports() {
         ? `${employee.first_name} ${employee.last_name}`
         : ''
 
-      const reportStructureId =
-        report.structure_id || employee?.structure_id
-
-      const reportSiteId = report.site_id || employee?.site_id
+      const reportStructureId = getReportStructureId(report)
+      const reportSiteId = report.site_id
 
       const matchesStructure =
         structureFilter === 'all' ||
@@ -372,7 +383,9 @@ export default function AdminReports() {
 
       const matchesSite =
         siteFilter === 'all' ||
-        reportSiteId === siteFilter
+        (siteFilter === 'none'
+          ? !reportSiteId
+          : reportSiteId === siteFilter)
 
       const matchesStatus =
         statusFilter === 'all' ||
@@ -385,7 +398,8 @@ export default function AdminReports() {
       const matchesSearch =
         !query ||
         report.title.toLowerCase().includes(query) ||
-        report.description?.toLowerCase().includes(query) ||
+        (report.description &&
+          report.description.toLowerCase().includes(query)) ||
         employeeName.toLowerCase().includes(query) ||
         (structure?.name || '').toLowerCase().includes(query) ||
         (site?.name || '').toLowerCase().includes(query) ||
@@ -401,79 +415,197 @@ export default function AdminReports() {
     })
   }, [
     reports,
-    employees,
-    structures,
-    sites,
     search,
     structureFilter,
     siteFilter,
     statusFilter,
     typeFilter,
+    getEmployee,
+    getStructure,
+    getSite,
+    getReportStructureId,
   ])
 
   const groupedData = useMemo(() => {
-    return structures
-      .map((structure) => {
-        const structureSites = sites.filter(
-          (site) => site.structure_id === structure.id,
+    // 1. Regroupement initial par structure
+    const reportsByStructure = new Map<string, Report[]>()
+    for (const report of filteredReports) {
+      const structId =
+        getReportStructureId(report) || 'unassigned-structure'
+      if (!reportsByStructure.has(structId)) {
+        reportsByStructure.set(structId, [])
+      }
+      reportsByStructure.get(structId)!.push(report)
+    }
+
+    const helperGroupByEmployee = (
+      reportList: Report[],
+      defaultStructureId: string,
+    ) => {
+      const byAuthor = new Map<string, Report[]>()
+      for (const r of reportList) {
+        const authorId =
+          r.author_employee_id || r.employee_id || 'unknown'
+        if (!byAuthor.has(authorId)) {
+          byAuthor.set(authorId, [])
+        }
+        byAuthor.get(authorId)!.push(r)
+      }
+
+      return Array.from(byAuthor.entries()).map(
+        ([authorId, authorReports]) => {
+          const found = employees.find((e) => e.id === authorId)
+          const employee: Employee = found || {
+            id: authorId,
+            first_name:
+              authorId === 'unknown' ? 'Auteur' : 'Employé',
+            last_name:
+              authorId === 'unknown'
+                ? 'Inconnu'
+                : `(${authorId.slice(0, 8)})`,
+            structure_id: defaultStructureId,
+            site_id: null,
+            service_id: null,
+            position_id: null,
+            is_active: true,
+          }
+
+          return {
+            employee,
+            reports: authorReports,
+          }
+        },
+      )
+    }
+
+    const groups: {
+      structure: Structure
+      siteGroups: {
+        site: Site
+        employeeGroups: {
+          employee: Employee
+          reports: Report[]
+        }[]
+        totalReports: number
+      }[]
+      totalReports: number
+    }[] = []
+
+    // A. Structures référencées
+    for (const structure of structures) {
+      const structureReports =
+        reportsByStructure.get(structure.id) || []
+      if (structureReports.length === 0) continue
+
+      const structureSites = sites.filter(
+        (site) => site.structure_id === structure.id,
+      )
+
+      const siteGroups = []
+
+      // 1. Sites connus de la structure
+      for (const site of structureSites) {
+        const siteReports = structureReports.filter(
+          (report) => report.site_id === site.id,
+        )
+        if (siteReports.length === 0) continue
+
+        const employeeGroups = helperGroupByEmployee(
+          siteReports,
+          structure.id,
         )
 
-        const siteGroups = structureSites
-          .map((site) => {
-            const siteEmployees = employees.filter(
-              (employee) =>
-                employee.site_id === site.id &&
-                employee.structure_id === structure.id,
-            )
+        siteGroups.push({
+          site,
+          employeeGroups,
+          totalReports: siteReports.length,
+        })
+      }
 
-            const employeeGroups = siteEmployees
-              .map((employee) => {
-                const employeeReports =
-                  filteredReports.filter((report) => {
-                    const reportEmployeeId =
-                      report.author_employee_id ||
-                      report.employee_id
+      // 2. Rapports de cette structure sans site (ou avec site non référencé)
+      const unassignedSiteReports = structureReports.filter(
+        (report) =>
+          !report.site_id ||
+          !structureSites.some((s) => s.id === report.site_id),
+      )
 
-                    const reportSiteId =
-                      report.site_id || employee.site_id
+      if (unassignedSiteReports.length > 0) {
+        const unassignedSite: Site = {
+          id: `unassigned-site-${structure.id}`,
+          name: 'Sans site / Non renseigné',
+          structure_id: structure.id,
+          city_id: null,
+          type: 'Non attribué',
+          is_active: true,
+        }
 
-                    return (
-                      reportEmployeeId === employee.id &&
-                      reportSiteId === site.id
-                    )
-                  })
+        const employeeGroups = helperGroupByEmployee(
+          unassignedSiteReports,
+          structure.id,
+        )
 
-                return {
-                  employee,
-                  reports: employeeReports,
-                }
-              })
-              .filter(
-                (group) => group.reports.length > 0,
-              )
+        siteGroups.push({
+          site: unassignedSite,
+          employeeGroups,
+          totalReports: unassignedSiteReports.length,
+        })
+      }
 
-            return {
-              site,
-              employeeGroups,
-              totalReports: employeeGroups.reduce(
-                (sum, group) => sum + group.reports.length,
-                0,
-              ),
-            }
-          })
-          .filter((group) => group.totalReports > 0)
-
-        return {
+      if (siteGroups.length > 0) {
+        groups.push({
           structure,
           siteGroups,
-          totalReports: siteGroups.reduce(
-            (sum, group) => sum + group.totalReports,
-            0,
-          ),
-        }
+          totalReports: structureReports.length,
+        })
+      }
+    }
+
+    // B. Rapports orphelins de structure (si présents)
+    const orphanReports =
+      reportsByStructure.get('unassigned-structure') || []
+    if (orphanReports.length > 0) {
+      const orphanStructure: Structure = {
+        id: 'unassigned-structure',
+        name: 'Structure non renseignée',
+        code: 'N/A',
+        is_active: true,
+      }
+
+      const orphanSite: Site = {
+        id: 'unassigned-site-orphan',
+        name: 'Sans site / Non renseigné',
+        structure_id: 'unassigned-structure',
+        city_id: null,
+        type: 'Non attribué',
+        is_active: true,
+      }
+
+      const employeeGroups = helperGroupByEmployee(
+        orphanReports,
+        'unassigned-structure',
+      )
+
+      groups.push({
+        structure: orphanStructure,
+        siteGroups: [
+          {
+            site: orphanSite,
+            employeeGroups,
+            totalReports: orphanReports.length,
+          },
+        ],
+        totalReports: orphanReports.length,
       })
-      .filter((group) => group.totalReports > 0)
-  }, [structures, sites, employees, filteredReports])
+    }
+
+    return groups
+  }, [
+    filteredReports,
+    structures,
+    sites,
+    employees,
+    getReportStructureId,
+  ])
 
   const stats = useMemo(() => {
     return {
@@ -785,6 +917,10 @@ export default function AdminReports() {
                 <SelectContent>
                   <SelectItem value="all">
                     Tous les sites
+                  </SelectItem>
+
+                  <SelectItem value="none">
+                    Sans site / Non renseigné
                   </SelectItem>
 
                   {sites

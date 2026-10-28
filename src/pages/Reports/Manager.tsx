@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useAuth } from '@/hooks/useAuth'
 import { supabase } from '@/integrations/supabase/client'
 import {
+  getFriendlyReportErrorMessage,
+  validateReportFile,
+} from './reportUtils'
+import {
   AlertCircle,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -20,6 +26,7 @@ import {
   Upload,
   User,
   X,
+  XCircle,
 } from 'lucide-react'
 
 import {
@@ -230,7 +237,15 @@ function isPdf(file?: Attachment | null) {
 ========================================================= */
 
 export default function ManagerReportsPage() {
-  const { profile } = useAuth()
+  const { profile, role, loading: authLoading } = useAuth()
+  const navigate = useNavigate()
+
+  // Sécurité : redirection si l'utilisateur connecté n'est ni manager ni admin
+  useEffect(() => {
+    if (!authLoading && role && role !== 'manager' && role !== 'admin') {
+      navigate('/reports', { replace: true })
+    }
+  }, [authLoading, role, navigate])
 
   /* -------------------------------------------------------
      DATA
@@ -241,9 +256,11 @@ export default function ManagerReportsPage() {
   const [reportTypes, setReportTypes] = useState<ReportType[]>([])
   // employee_id → primary site_id (from employee_sites V3)
   const [employeeSiteMap, setEmployeeSiteMap] = useState<Map<string, string>>(new Map())
+  const [receivedReportIds, setReceivedReportIds] = useState<Set<string>>(new Set())
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [updatingStatus, setUpdatingStatus] = useState(false)
 
   /* -------------------------------------------------------
      VIEW
@@ -494,6 +511,30 @@ export default function ManagerReportsPage() {
         }
 
         /* ---------------------------------------------------
+           REPORT_RECIPIENTS (V3)
+           Récupère les identifiants des rapports adressés
+           au manager via la table de routage report_recipients.
+        --------------------------------------------------- */
+        const recipientReportIdSet = new Set<string>()
+
+        try {
+          const { data: rrData, error: rrError } = await supabase
+            .from('report_recipients')
+            .select('report_id')
+            .eq('employee_id', profile.id)
+
+          if (!rrError && rrData) {
+            rrData.forEach((row: { report_id: string }) => {
+              if (row.report_id) {
+                recipientReportIdSet.add(row.report_id)
+              }
+            })
+          }
+        } catch (rrErr) {
+          console.warn('report_recipients non disponible:', rrErr)
+        }
+
+        /* ---------------------------------------------------
            REPORTS REÇUS
            Rapports dont le destinataire est le manager courant.
            Un rapport appartient à un et un seul employé.
@@ -546,6 +587,63 @@ export default function ManagerReportsPage() {
         if (receivedError) {
           throw receivedError
         }
+
+        // Ajouter les IDs reçus par les colonnes classiques
+        ; (receivedData ?? []).forEach((r) => recipientReportIdSet.add(r.id))
+
+        // Si report_recipients a identifié des rapports supplémentaires, les charger
+        const recipientReportIdsArray = Array.from(recipientReportIdSet)
+        let extraReceivedData: any[] = []
+        const missingIds = recipientReportIdsArray.filter(
+          (id) => !(receivedData ?? []).some((r) => r.id === id),
+        )
+
+        if (missingIds.length > 0) {
+          try {
+            const { data: extraData, error: extraError } = await supabase
+              .from('reports')
+              .select(`
+                id,
+                employee_id,
+                author_employee_id,
+                recipient_employee_id,
+                recipient_id,
+                report_type_id,
+                title,
+                description,
+                file_url,
+                submitted_at,
+                validated_at,
+                created_at,
+                received_at,
+                forwarded_by,
+                forwarded_at,
+                structure_id,
+                site_id,
+                status,
+                report_attachments (
+                  id,
+                  report_id,
+                  file_name,
+                  file_path,
+                  file_url,
+                  mime_type,
+                  file_size,
+                  created_at
+                )
+              `)
+              .in('id', missingIds)
+
+            if (!extraError && extraData) {
+              extraReceivedData = extraData
+            }
+          } catch (fetchExtraErr) {
+            console.warn('Erreur chargement extra reports:', fetchExtraErr)
+          }
+        }
+
+        const allReceived = [...(receivedData ?? []), ...extraReceivedData]
+        setReceivedReportIds(recipientReportIdSet)
 
         /* ---------------------------------------------------
            MES RAPPORTS
@@ -600,15 +698,15 @@ export default function ManagerReportsPage() {
           throw myError
         }
 
-        const reportData = [
-          ...(receivedData ?? []),
-          ...(myData ?? []).filter(
-            (r) =>
-              !(receivedData ?? []).some(
-                (rec) => rec.id === r.id,
-              ),
-          ),
-        ]
+        const reportMap = new Map<string, any>()
+        allReceived.forEach((r) => reportMap.set(r.id, r))
+          ; (myData ?? []).forEach((r) => {
+            if (!reportMap.has(r.id)) {
+              reportMap.set(r.id, r)
+            }
+          })
+
+        const reportData = Array.from(reportMap.values())
 
         /* ---------------------------------------------------
            MAPS
@@ -736,13 +834,16 @@ export default function ManagerReportsPage() {
 
     return reports.filter(
       (report) =>
-        report.recipient_employee_id === profile.id ||
-        (
-          !report.recipient_employee_id &&
-          report.recipient_id === profile.id
-        ),
+        (receivedReportIds.has(report.id) ||
+          report.recipient_employee_id === profile.id ||
+          (
+            !report.recipient_employee_id &&
+            report.recipient_id === profile.id
+          )) &&
+        report.author_employee_id !== profile.id &&
+        report.employee_id !== profile.id,
     )
-  }, [reports, profile?.id])
+  }, [reports, profile?.id, receivedReportIds])
 
   /* =======================================================
      FILTERED REPORTS
@@ -903,6 +1004,10 @@ export default function ManagerReportsPage() {
           report.status === 'received',
       ).length,
 
+      reviewed: received.filter(
+        (report) => report.status === 'reviewed',
+      ).length,
+
       forwarded: received.filter(
         (report) =>
           report.status === 'forwarded',
@@ -916,7 +1021,7 @@ export default function ManagerReportsPage() {
   ])
 
   /* =======================================================
-     DETAILS
+     DETAILS & ACTIONS
   ======================================================= */
 
   const openDetails = (report: Report) => {
@@ -930,6 +1035,100 @@ export default function ManagerReportsPage() {
     window.setTimeout(() => {
       setSelectedReport(null)
     }, 200)
+  }
+
+  const handleUpdateReportStatus = async (
+    targetReport: Report,
+    newStatus: ReportStatus,
+    extraFields: Record<string, unknown> = {},
+  ) => {
+    if (!profile?.id) return
+
+    // 1. Contrôle strict des transitions autorisées pour un manager
+    const allowedTransitions: Record<ReportStatus, ReportStatus[]> = {
+      submitted: ['reviewed', 'forwarded', 'rejected'],
+      received: ['reviewed', 'forwarded', 'rejected'],
+      reviewed: ['forwarded'],
+      forwarded: [],
+      rejected: [],
+      draft: [],
+      archived: [],
+    }
+
+    if (!allowedTransitions[targetReport.status]?.includes(newStatus)) {
+      showFeedback(
+        'error',
+        `Transition non autorisée : impossible de passer de "${statusLabels[targetReport.status] || targetReport.status}" à "${statusLabels[newStatus] || newStatus}".`,
+      )
+      return
+    }
+
+    // 2. Contrôle de destination : le rapport doit être destiné au manager ou à sa structure
+    const isReportDestined =
+      receivedReportIds.has(targetReport.id) ||
+      targetReport.recipient_employee_id === profile.id ||
+      targetReport.recipient_id === profile.id ||
+      (targetReport.structure_id && targetReport.structure_id === profile.structure_id)
+
+    if (!isReportDestined && role !== 'admin') {
+      showFeedback(
+        'error',
+        "Opération refusée : ce rapport n'est pas adressé à votre compte ni rattaché à votre structure.",
+      )
+      return
+    }
+
+    setUpdatingStatus(true)
+
+    try {
+      const payload: Record<string, unknown> = {
+        status: newStatus,
+        ...extraFields,
+      }
+
+      // Requête Supabase avec retour de données (.select) pour confirmer la persistance réelle en base
+      const { data, error } = await supabase
+        .from('reports')
+        .update(payload)
+        .eq('id', targetReport.id)
+        .select('id, status')
+
+      if (error) {
+        throw error
+      }
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          "La modification n'a pas pu être enregistrée en base. Vous ne disposez peut-être pas des autorisations requises sur ce rapport.",
+        )
+      }
+
+      // Mettre à jour l'état local UNIQUEMENT après confirmation de persistance
+      setSelectedReport((prev) =>
+        prev && prev.id === targetReport.id
+          ? { ...prev, ...payload }
+          : prev,
+      )
+      setReports((prev) =>
+        prev.map((r) =>
+          r.id === targetReport.id ? { ...r, ...payload } : r,
+        ),
+      )
+
+      const statusName = statusLabels[newStatus] || newStatus
+      showFeedback(
+        'success',
+        `Rapport mis à jour avec le statut : ${statusName}.`,
+      )
+
+      loadData(false)
+    } catch (error) {
+      console.error('Erreur mise à jour statut rapport:', error)
+      const friendlyMessage = getFriendlyReportErrorMessage(error)
+      showFeedback('error', friendlyMessage)
+    } finally {
+      setUpdatingStatus(false)
+    }
   }
 
   /* =======================================================
@@ -1069,21 +1268,32 @@ export default function ManagerReportsPage() {
   const handleFilesChange = (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
-    const files = Array.from(
-      event.target.files ?? [],
-    )
+    const rawFiles = Array.from(event.target.files ?? [])
+    const validFiles: File[] = []
 
-    setNewFiles(files)
+    for (const file of rawFiles) {
+      const validation = validateReportFile(file)
+      if (!validation.valid) {
+        showFeedback(
+          'error',
+          validation.error || `Le fichier "${file.name}" est invalide.`,
+        )
+        return
+      }
+      validFiles.push(file)
+    }
+
+    setNewFiles(validFiles)
   }
 
   const createReport = async () => {
     if (!profile?.id || !profile.structure_id) {
-      showFeedback('error', 'Profil utilisateur introuvable.')
+      showFeedback('error', 'Profil utilisateur introuvable ou structure manquante.')
       return
     }
 
     if (!newReportTypeId) {
-      showFeedback('error', 'Sélectionnez le type de rapport.')
+      showFeedback('error', 'Veuillez sélectionner le type de rapport.')
       return
     }
 
@@ -1097,13 +1307,6 @@ export default function ManagerReportsPage() {
     try {
       /* -------------------------------------------------------
          STEP 1 — Créer le rapport via la RPC sécurisée
-         La RPC détermine automatiquement :
-           • l'auteur (auth.uid() → employees)
-           • la structure
-           • le site principal
-           • les destinataires (manager + admin selon le rôle)
-           • les notifications
-         Le frontend n'envoie QUE les données métier.
       ------------------------------------------------------- */
       const {
         data: reportId,
@@ -1120,23 +1323,27 @@ export default function ManagerReportsPage() {
 
       if (!reportId) {
         throw new Error(
-          'Le rapport a été créé mais son identifiant est introuvable.',
+          'Le rapport n’a pas pu être créé (aucun identifiant retourné).',
         )
       }
+
+      const createdReportId = reportId as string
 
       /* -------------------------------------------------------
          STEP 2 — Upload des pièces jointes (si présentes)
       ------------------------------------------------------- */
+      let uploadFailureCount = 0
+
       for (const file of newFiles) {
         const extension =
           file.name.includes('.')
-            ? file.name.split('.').pop()?.toLowerCase() ?? 'file'
-            : 'file'
+            ? file.name.split('.').pop()?.toLowerCase() ?? 'bin'
+            : 'bin'
 
         const filePath = [
           profile.structure_id,
           profile.id,
-          reportId,
+          createdReportId,
           `${crypto.randomUUID()}.${extension}`,
         ].join('/')
 
@@ -1150,13 +1357,14 @@ export default function ManagerReportsPage() {
 
         if (uploadError) {
           console.error('Erreur upload fichier:', uploadError)
+          uploadFailureCount++
           continue
         }
 
         const { error: attachmentError } = await supabase
           .from('report_attachments')
           .insert({
-            report_id: reportId,
+            report_id: createdReportId,
             file_name: file.name,
             file_path: filePath,
             file_url: null,
@@ -1166,27 +1374,30 @@ export default function ManagerReportsPage() {
 
         if (attachmentError) {
           console.error('Erreur insertion attachment:', attachmentError)
+          uploadFailureCount++
         }
       }
 
       resetCreateForm()
       setCreateOpen(false)
 
-      showFeedback(
-        'success',
-        'Votre rapport a été envoyé à l\u2019administrateur.',
-      )
+      if (uploadFailureCount > 0) {
+        showFeedback(
+          'error',
+          `Le rapport a été transmis avec succès, mais ${uploadFailureCount} pièce(s) jointe(s) n'ont pas pu être téléversées.`,
+        )
+      } else {
+        showFeedback(
+          'success',
+          'Votre rapport a été transmis avec succès à l’administrateur.',
+        )
+      }
 
       await loadData(false)
     } catch (error) {
-      console.error('Erreur création rapport:', error)
-
-      showFeedback(
-        'error',
-        error instanceof Error
-          ? error.message
-          : 'Impossible de créer le rapport.',
-      )
+      console.error('Erreur création rapport manager:', error)
+      const friendlyMessage = getFriendlyReportErrorMessage(error)
+      showFeedback('error', friendlyMessage)
     } finally {
       setCreating(false)
     }
@@ -1588,7 +1799,7 @@ export default function ManagerReportsPage() {
 
         {/* STATS */}
 
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
           <div className="rounded-xl border bg-card p-4">
             <p className="text-xs text-muted-foreground">
               Mes rapports
@@ -1614,8 +1825,18 @@ export default function ManagerReportsPage() {
               À consulter
             </p>
 
-            <p className="mt-1 text-2xl font-bold">
+            <p className="mt-1 text-2xl font-bold text-blue-600">
               {stats.pending}
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-4">
+            <p className="text-xs text-muted-foreground">
+              Examiné
+            </p>
+
+            <p className="mt-1 text-2xl font-bold text-emerald-600">
+              {stats.reviewed}
             </p>
           </div>
 
@@ -1624,7 +1845,7 @@ export default function ManagerReportsPage() {
               Transmis
             </p>
 
-            <p className="mt-1 text-2xl font-bold">
+            <p className="mt-1 text-2xl font-bold text-violet-600">
               {stats.forwarded}
             </p>
           </div>
@@ -2002,12 +2223,97 @@ export default function ManagerReportsPage() {
                   </div>
                 </div>
 
-                <DialogFooter>
+                <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between sm:gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {viewMode === 'received' && selectedReport && (
+                      <>
+                        {/* Action: Marquer comme examiné */}
+                        {(selectedReport.status === 'submitted' ||
+                          selectedReport.status === 'received') && (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              disabled={updatingStatus}
+                              onClick={() =>
+                                handleUpdateReportStatus(
+                                  selectedReport,
+                                  'reviewed',
+                                  {
+                                    received_at:
+                                      selectedReport.received_at ||
+                                      new Date().toISOString(),
+                                  },
+                                )
+                              }
+                            >
+                              {updatingStatus ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              ) : (
+                                <Check className="mr-2 h-4 w-4 text-emerald-600" />
+                              )}
+                              Marquer comme examiné
+                            </Button>
+                          )}
+
+                        {/* Action: Transmettre à l'administration */}
+                        {(selectedReport.status === 'submitted' ||
+                          selectedReport.status === 'received' ||
+                          selectedReport.status === 'reviewed') && (
+                            <Button
+                              type="button"
+                              variant="default"
+                              disabled={updatingStatus}
+                              onClick={() =>
+                                handleUpdateReportStatus(
+                                  selectedReport,
+                                  'forwarded',
+                                  {
+                                    forwarded_at: new Date().toISOString(),
+                                    forwarded_by: profile?.id,
+                                  },
+                                )
+                              }
+                            >
+                              {updatingStatus ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              ) : (
+                                <Send className="mr-2 h-4 w-4" />
+                              )}
+                              Transmettre à l'administration
+                            </Button>
+                          )}
+
+                        {/* Action: Rejeter */}
+                        {(selectedReport.status === 'submitted' ||
+                          selectedReport.status === 'received') && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="border-destructive/30 text-destructive hover:bg-destructive/10"
+                              disabled={updatingStatus}
+                              onClick={() =>
+                                handleUpdateReportStatus(
+                                  selectedReport,
+                                  'rejected',
+                                )
+                              }
+                            >
+                              {updatingStatus ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              ) : (
+                                <XCircle className="mr-2 h-4 w-4" />
+                              )}
+                              Rejeter
+                            </Button>
+                          )}
+                      </>
+                    )}
+                  </div>
+
                   <Button
                     variant="outline"
-                    onClick={
-                      closeDetails
-                    }
+                    disabled={updatingStatus}
+                    onClick={closeDetails}
                   >
                     Fermer
                   </Button>
@@ -2078,6 +2384,12 @@ export default function ManagerReportsPage() {
                     )}
                   </SelectContent>
                 </Select>
+
+                {reportTypes.length === 0 && (
+                  <p className="text-xs text-amber-600">
+                    Aucun type de rapport n'est configuré pour cette structure.
+                  </p>
+                )}
               </div>
 
               {/* TITLE */}
