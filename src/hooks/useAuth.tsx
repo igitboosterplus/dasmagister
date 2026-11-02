@@ -29,6 +29,8 @@ export interface Employee {
   account_status: string;
   is_active: boolean;
   created_at: string;
+  position_name?: string | null;
+  structure_name?: string | null;
 }
 
 interface AuthContextType {
@@ -36,6 +38,8 @@ interface AuthContextType {
   session: Session | null;
   profile: Employee | null;
   role: AppRole | null;
+  isRhManager: boolean;
+  isManagerOrRh: boolean;
   loading: boolean;
 
   signIn: (
@@ -175,7 +179,17 @@ export function AuthProvider({
       const [employeeRes, roleRes] = await Promise.all([
         supabase
           .from('employees')
-          .select('*')
+          .select(`
+            *,
+            positions (
+              id,
+              name
+            ),
+            structures (
+              id,
+              name
+            )
+          `)
           .eq('auth_user_id', userId)
           .single(),
 
@@ -188,7 +202,19 @@ export function AuthProvider({
           employeeRes.error
         );
       } else if (employeeRes.data) {
-        setProfile(employeeRes.data as Employee);
+        const raw = employeeRes.data as any;
+        const posName = Array.isArray(raw.positions)
+          ? raw.positions[0]?.name
+          : raw.positions?.name;
+        const structName = Array.isArray(raw.structures)
+          ? raw.structures[0]?.name
+          : raw.structures?.name;
+
+        setProfile({
+          ...raw,
+          position_name: posName ?? null,
+          structure_name: structName ?? null,
+        } as Employee);
       }
 
       if (roleRes.error) {
@@ -692,6 +718,17 @@ export function AuthProvider({
     }
   };
 
+  const normalizedPos = (profile?.position_name || '').toLowerCase().trim();
+  const isRhManager = Boolean(
+    normalizedPos === 'responsable rh' ||
+    normalizedPos.includes('responsable rh') ||
+    normalizedPos === 'responsable des ressources humaines' ||
+    normalizedPos === 'drh'
+  );
+  const isManagerOrRh = Boolean(
+    role === 'manager' || role === 'admin' || isRhManager
+  );
+
   return (
     <AuthContext.Provider
       value={{
@@ -699,6 +736,8 @@ export function AuthProvider({
         session,
         profile,
         role,
+        isRhManager,
+        isManagerOrRh,
         loading,
         signIn,
         signUp,

@@ -180,7 +180,12 @@ export default function NotificationBell() {
 
     // Redirection contextuelle selon le type
     if (notif.type === 'new_registration') {
-      navigate('/dashboard/manager');
+      if (profile?.structure_id) {
+        // Redirige vers Magistere ou Dashboard selon l'espace
+        navigate('/dashboard/manager');
+      } else {
+        navigate('/dashboard/manager');
+      }
     } else if (
       notif.type === 'registration_approved' ||
       notif.type === 'registration_rejected'
@@ -237,9 +242,10 @@ export default function NotificationBell() {
       <PopoverContent
         align="end"
         sideOffset={8}
-        className="w-80 sm:w-96 p-0 shadow-xl border-border/80 bg-card/95 backdrop-blur-md rounded-2xl overflow-hidden"
+        className="w-80 sm:w-[400px] p-0 shadow-2xl border-border/80 bg-card/95 backdrop-blur-md rounded-2xl overflow-hidden flex flex-col"
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/40">
+        {/* Sticky Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/40 shrink-0">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm text-foreground">Notifications</span>
             {unreadCount > 0 ? (
@@ -267,7 +273,12 @@ export default function NotificationBell() {
           )}
         </div>
 
-        <ScrollArea className="max-h-[380px] divide-y divide-border/40">
+        {/* Guaranteed Scrollable Notification Space */}
+        <div
+          tabIndex={0}
+          aria-label="Liste des notifications défilable"
+          className="max-h-[360px] sm:max-h-[440px] overflow-y-auto overscroll-contain divide-y divide-border/40 focus:outline-none"
+        >
           {loading && notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary mb-2" />
@@ -301,7 +312,7 @@ export default function NotificationBell() {
                     <div className="flex items-start justify-between gap-1">
                       <h4
                         className={`text-xs font-semibold leading-tight line-clamp-1 ${
-                          !notif.is_read ? 'text-foreground' : 'text-muted-foreground'
+                          !notif.is_read ? 'text-foreground font-bold' : 'text-muted-foreground'
                         }`}
                       >
                         {notif.title}
@@ -344,12 +355,12 @@ export default function NotificationBell() {
               ))}
             </div>
           )}
-        </ScrollArea>
+        </div>
 
         {notifications.length > 0 && (
-          <div className="p-2 border-t border-border/60 bg-muted/20 text-center">
+          <div className="p-2 border-t border-border/60 bg-muted/20 text-center shrink-0">
             <p className="text-[10px] text-muted-foreground">
-              Notifications en temps réel synchronisées
+              Défilement actif • Notifications temps réel
             </p>
           </div>
         )}

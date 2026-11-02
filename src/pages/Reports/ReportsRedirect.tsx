@@ -4,14 +4,14 @@ import { useAuth } from '@/hooks/useAuth'
 import { Loader2 } from 'lucide-react'
 
 export default function ReportsRedirect() {
-    const { user, role, loading } = useAuth()
+    const { user, role, isRhManager, loading } = useAuth()
     const navigate = useNavigate()
 
     useEffect(() => {
         if (!loading && user && role) {
             if (role === 'admin') {
                 navigate('/reports/admin', { replace: true })
-            } else if (role === 'manager') {
+            } else if (role === 'manager' || isRhManager) {
                 navigate('/reports/manager', { replace: true })
             } else if (role === 'employee') {
                 navigate('/reports/employer', { replace: true })
@@ -19,7 +19,7 @@ export default function ReportsRedirect() {
                 navigate('/dashboard', { replace: true })
             }
         }
-    }, [loading, user, role, navigate])
+    }, [loading, user, role, isRhManager, navigate])
 
     if (loading) {
         return (

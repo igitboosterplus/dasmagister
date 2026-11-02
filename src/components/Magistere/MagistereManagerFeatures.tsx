@@ -48,68 +48,339 @@ import {
 import { format, differenceInCalendarDays, parseISO } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
+import { useSearchParams } from 'react-router-dom';
 import { ManagerRegistrationsTab } from '@/components/ManagerRegistrationsTab';
 
 export function MagistereManagerFeatures({ structureId }: { structureId: string }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') || 'missions';
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
+
   const [pendingCount, setPendingCount] = useState(0);
+  const [stats, setStats] = useState({
+    missionsTotal: 0,
+    missionsActive: 0,
+    absencesPending: 0,
+    reportsPending: 0,
+  });
+  const [loadingStats, setLoadingStats] = useState(true);
+
+  // Synchronisation avec l'URL param ?tab=
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && ['missions', 'absences', 'reports', 'types', 'inscriptions'].includes(tabParam)) {
+      setActiveTab(tabParam);
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (val: string) => {
+    setActiveTab(val);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', val);
+      return next;
+    });
+  };
+
+  // Chargement des compteurs pour le bandeau KPI de Magistère
+  useEffect(() => {
+    if (!structureId) return;
+
+    const fetchSummaryStats = async () => {
+      try {
+        setLoadingStats(true);
+
+        const [missionsRes, absencesRes, reportsRes, pendingRes] = await Promise.all([
+          // 1. Missions de la structure
+          supabase
+            .from('missions')
+            .select('id, status', { count: 'exact' })
+            .eq('structure_id', structureId),
+
+          // 2. Absences en attente
+          supabase
+            .from('employee_absences')
+            .select('id', { count: 'exact' })
+            .eq('structure_id', structureId)
+            .eq('status', 'pending'),
+
+          // 3. Doléances (reports) de la structure en attente
+          supabase
+            .from('reports')
+            .select('id', { count: 'exact' })
+            .eq('structure_id', structureId)
+            .eq('status', 'submitted'),
+
+          // 4. Inscriptions en attente
+          supabase
+            .from('employees')
+            .select('id', { count: 'exact' })
+            .eq('structure_id', structureId)
+            .eq('account_status', 'pending'),
+        ]);
+
+        const missionsData = missionsRes.data || [];
+        const activeMissions = missionsData.filter(
+          (m) => m.status === 'in_progress' || m.status === 'assigned'
+        ).length;
+
+        setStats({
+          missionsTotal: missionsRes.count || 0,
+          missionsActive: activeMissions,
+          absencesPending: absencesRes.count || 0,
+          reportsPending: reportsRes.count || 0,
+        });
+
+        if (pendingRes.count !== null && pendingRes.count !== undefined) {
+          setPendingCount(pendingRes.count);
+        }
+      } catch (err) {
+        console.error('Erreur chargement résumé KPI Magistère:', err);
+      } finally {
+        setLoadingStats(false);
+      }
+    };
+
+    fetchSummaryStats();
+
+    // Écoute en temps réel des changements pour mettre à jour instantanément les compteurs
+    const channel = supabase
+      .channel(`magistere-summary-${structureId}-${Math.random().toString(36).substring(2, 7)}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'employees', filter: `structure_id=eq.${structureId}` },
+        () => fetchSummaryStats()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'missions', filter: `structure_id=eq.${structureId}` },
+        () => fetchSummaryStats()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'employee_absences', filter: `structure_id=eq.${structureId}` },
+        () => fetchSummaryStats()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reports', filter: `structure_id=eq.${structureId}` },
+        () => fetchSummaryStats()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [structureId]);
 
   return (
-    <div className="mt-8 space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/60">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
-            <Badge variant="outline" className="text-primary border-primary font-bold">
-              MAGISTÈRE
-            </Badge>
-            <span>Fonctionnalités Spécifiques Manager</span>
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Outils dédiés à la coordination interne, suivi des missions, validation des inscriptions et doléances.
-          </p>
-        </div>
+    <div className="space-y-6">
+      {/* Magistère KPI Overview Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <button
+          onClick={() => handleTabChange('missions')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'missions'
+              ? 'border-primary bg-primary/5 shadow-sm'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Missions Terrain
+            </span>
+            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
+              <MapPin className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-display text-foreground">
+              {stats.missionsActive}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              actives ({stats.missionsTotal} au total)
+            </span>
+          </div>
+        </button>
+
+        <button
+          onClick={() => handleTabChange('absences')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'absences'
+              ? 'border-primary bg-primary/5 shadow-sm'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Absences à valider
+            </span>
+            <div className="p-2 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+              <Clock className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-display text-foreground">
+              {stats.absencesPending}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              demande{stats.absencesPending > 1 ? 's' : ''} en attente
+            </span>
+          </div>
+        </button>
+
+        <button
+          onClick={() => handleTabChange('reports')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'reports'
+              ? 'border-primary bg-primary/5 shadow-sm'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Doléances Reçues
+            </span>
+            <div className="p-2 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400">
+              <FileText className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-display text-foreground">
+              {stats.reportsPending}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              à traiter
+            </span>
+          </div>
+        </button>
+
+        <button
+          onClick={() => handleTabChange('inscriptions')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'inscriptions'
+              ? 'border-amber-500 bg-amber-500/10 shadow-sm'
+              : pendingCount > 0
+              ? 'border-amber-500/50 bg-amber-500/5 hover:border-amber-500'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Inscriptions
+            </span>
+            <div
+              className={`p-2 rounded-lg ${
+                pendingCount > 0
+                  ? 'bg-amber-500 text-white animate-pulse'
+                  : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+              }`}
+            >
+              <CheckCircle2 className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span
+              className={`text-2xl font-bold font-display ${
+                pendingCount > 0 ? 'text-amber-600 dark:text-amber-400 font-extrabold' : 'text-foreground'
+              }`}
+            >
+              {pendingCount}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {pendingCount > 0 ? 'à approuver urgemment' : 'à jour'}
+            </span>
+          </div>
+        </button>
       </div>
 
-      <Tabs defaultValue="missions" className="w-full">
-        <TabsList className="grid grid-cols-2 sm:grid-cols-5 mb-6 w-full max-w-3xl">
-          <TabsTrigger value="missions" className="text-xs sm:text-sm">
+      {/* Alerte Visuelle Prioritaire : Inscriptions en attente pour Magistère */}
+      {pendingCount > 0 && (
+        <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-amber-500/5 to-card p-4 sm:p-5 shadow-sm animate-fade-in flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 shrink-0">
+              <AlertTriangle className="h-5 w-5 animate-bounce" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-foreground text-sm">
+                  Inscriptions en attente de validation pour Magistère
+                </h3>
+                <Badge
+                  variant="outline"
+                  className="bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/30 font-bold text-[11px]"
+                >
+                  {pendingCount} candidat{pendingCount > 1 ? 's' : ''}
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                De nouveaux collaborateurs ont choisi la structure <strong>Magistère</strong> lors de leur inscription. Examinez et activez leur profil pour leur débloquer l'accès.
+              </p>
+            </div>
+          </div>
+
+          <Button
+            size="sm"
+            onClick={() => handleTabChange('inscriptions')}
+            className="bg-amber-600 hover:bg-amber-700 text-white text-xs h-8 px-4 shrink-0 shadow-xs font-semibold"
+          >
+            Examiner & Valider
+          </Button>
+        </div>
+      )}
+
+      {/* Tabs Layout */}
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+        <TabsList className="grid grid-cols-2 sm:grid-cols-5 mb-6 w-full max-w-3xl h-auto p-1 bg-muted/60 rounded-xl">
+          <TabsTrigger value="missions" className="text-xs sm:text-sm py-2 rounded-lg">
             Missions
           </TabsTrigger>
-          <TabsTrigger value="absences" className="text-xs sm:text-sm">
-            Demandes d'absence
+          <TabsTrigger value="absences" className="text-xs sm:text-sm py-2 rounded-lg flex items-center justify-center gap-1.5">
+            <span>Absences</span>
+            {stats.absencesPending > 0 && (
+              <span className="h-4 min-w-4 px-1 rounded-full bg-amber-500 text-[10px] font-bold text-white flex items-center justify-center">
+                {stats.absencesPending}
+              </span>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="reports" className="text-xs sm:text-sm">
-            Doléances reçues
+          <TabsTrigger value="reports" className="text-xs sm:text-sm py-2 rounded-lg flex items-center justify-center gap-1.5">
+            <span>Doléances</span>
+            {stats.reportsPending > 0 && (
+              <span className="h-4 min-w-4 px-1 rounded-full bg-purple-500 text-[10px] font-bold text-white flex items-center justify-center">
+                {stats.reportsPending}
+              </span>
+            )}
           </TabsTrigger>
-          <TabsTrigger value="types" className="text-xs sm:text-sm">
+          <TabsTrigger value="types" className="text-xs sm:text-sm py-2 rounded-lg">
             Types de doléances
           </TabsTrigger>
-          <TabsTrigger value="inscriptions" className="text-xs sm:text-sm flex items-center gap-1.5">
+          <TabsTrigger value="inscriptions" className="text-xs sm:text-sm py-2 rounded-lg flex items-center justify-center gap-1.5">
             <span>Inscriptions</span>
             {pendingCount > 0 && (
-              <span className="h-4 min-w-4 px-1 rounded-full bg-amber-500 text-[10px] font-bold text-white flex items-center justify-center">
+              <span className="h-4 min-w-4 px-1 rounded-full bg-amber-500 text-[10px] font-bold text-white flex items-center justify-center animate-pulse">
                 {pendingCount}
               </span>
             )}
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="missions" className="mt-0">
+        <TabsContent value="missions" className="mt-0 focus-visible:outline-none">
           <ManagerMissionsTab structureId={structureId} />
         </TabsContent>
 
-        <TabsContent value="absences" className="mt-0">
+        <TabsContent value="absences" className="mt-0 focus-visible:outline-none">
           <ManagerAbsencesTab structureId={structureId} />
         </TabsContent>
 
-        <TabsContent value="reports" className="mt-0">
+        <TabsContent value="reports" className="mt-0 focus-visible:outline-none">
           <ManagerReportsTab structureId={structureId} />
         </TabsContent>
 
-        <TabsContent value="types" className="mt-0">
+        <TabsContent value="types" className="mt-0 focus-visible:outline-none">
           <ManagerReportTypesTab structureId={structureId} />
         </TabsContent>
 
-        <TabsContent value="inscriptions" className="mt-0">
+        <TabsContent value="inscriptions" className="mt-0 focus-visible:outline-none">
           <ManagerRegistrationsTab structureId={structureId} onCountChange={setPendingCount} />
         </TabsContent>
       </Tabs>

@@ -59,7 +59,7 @@ interface Structure {
 }
 
 export default function DashboardManager() {
-  const { role, profile } = useAuth();
+  const { role, profile, isRhManager } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -84,7 +84,7 @@ export default function DashboardManager() {
   const [rejectReason, setRejectReason] = useState('');
 
   const fetchDashboard = async () => {
-    if (role !== 'manager' || !profile?.structure_id) {
+    if ((role !== 'manager' && !isRhManager) || !profile?.structure_id) {
       setLoading(false);
       return;
     }
@@ -388,6 +388,17 @@ export default function DashboardManager() {
   ];
 
   const quickLinks = [
+    ...(isRhManager
+      ? [
+          {
+            title: 'Pointage Itinérant (Tous sites)',
+            desc: 'Enregistrer vos arrivées et départs sur n’importe quel site visité',
+            path: '/attendance',
+            icon: Clock,
+            color: 'text-indigo-600 bg-indigo-500/10 border-indigo-500/20',
+          },
+        ]
+      : []),
     {
       title: 'Liste des Employés',
       desc: 'Consulter et administrer les collaborateurs de votre structure',
@@ -424,17 +435,25 @@ export default function DashboardManager() {
         {/* Welcome Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
                 <Building2 className="h-3 w-3" />
                 {structure?.name ? `Structure : ${structure.name}` : 'Espace Manager'}
               </span>
+              {isRhManager && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-600 border border-indigo-500/20">
+                  <Sparkles className="h-3 w-3 text-indigo-500" />
+                  Poste : Responsable RH (Pouvoirs Manager & Pointage Itinérant)
+                </span>
+              )}
             </div>
             <h1 className="page-title mt-2">
               Bonjour, {profile?.first_name} {profile?.last_name}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Suivi en temps réel de votre équipe et contrôle opérationnel des présences.
+              {isRhManager
+                ? 'Gestion complète des équipes, validation des présences et pointage actif sur l’ensemble des sites.'
+                : 'Suivi en temps réel de votre équipe et contrôle opérationnel des présences.'}
             </p>
           </div>
 

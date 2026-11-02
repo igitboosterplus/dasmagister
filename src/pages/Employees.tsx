@@ -125,7 +125,7 @@ interface PositionItem {
 // ============================================================
 
 export default function Employees() {
-  const { role, profile } = useAuth();
+  const { role, profile, isRhManager } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -240,7 +240,7 @@ export default function Employees() {
       return employee.role !== 'admin';
     }
 
-    if (role === 'manager') {
+    if (role === 'manager' || isRhManager) {
       return (
         employee.role === 'employee' &&
         employee.structure_id === profile?.structure_id
@@ -515,11 +515,11 @@ export default function Employees() {
           .order('first_name');
 
         // ----------------------------------------------------
-        // SÉCURITÉ SUPPLÉMENTAIRE MANAGER
+        // SÉCURITÉ SUPPLÉMENTAIRE MANAGER / RH
         // ----------------------------------------------------
 
         if (
-          role === 'manager' &&
+          (role === 'manager' || isRhManager) &&
           profile?.structure_id
         ) {
           query = query.eq(
@@ -794,7 +794,7 @@ export default function Employees() {
       }
 
       const filteredSites =
-        role === 'manager' &&
+        (role === 'manager' || isRhManager) &&
           profile?.structure_id
           ? (data || []).filter(
             (site) =>
@@ -826,7 +826,8 @@ export default function Employees() {
   useEffect(() => {
     if (
       role !== 'admin' &&
-      role !== 'manager'
+      role !== 'manager' &&
+      !isRhManager
     ) {
       setLoading(false);
       return;
@@ -1707,7 +1708,8 @@ export default function Employees() {
 
   if (
     role !== 'admin' &&
-    role !== 'manager'
+    role !== 'manager' &&
+    !isRhManager
   ) {
     return (
       <DashboardLayout>

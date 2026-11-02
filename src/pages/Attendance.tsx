@@ -29,6 +29,7 @@ import {
   MapPin,
   Radio,
   RefreshCw,
+  Sparkles,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -648,7 +649,7 @@ function getDistanceFromAssignedSite(
  * ========================================================== */
 
 export default function Attendance() {
-  const { profile } =
+  const { profile, isRhManager } =
     useAuth();
 
   const { toast } =
@@ -780,71 +781,97 @@ export default function Attendance() {
         return [];
       }
 
-      const {
-        data,
-        error,
-      } =
-        await supabase
-          .from('employee_sites')
+      let result: SiteContext[] = [];
+
+      if (isRhManager && profile.structure_id) {
+        // Le Responsable RH a accès à tous les sites actifs de sa structure pour son pointage itinérant
+        const {
+          data: structureSites,
+          error: structError,
+        } = await supabase
+          .from('sites')
           .select(`
-            site_id,
-            sites (
-              id,
-              name,
-              latitude,
-              longitude,
-              location_radius_m,
-              max_gps_accuracy_m,
-              gps_required,
-              wifi_required,
-              allowed_ip
-            )
+            id,
+            name,
+            latitude,
+            longitude,
+            location_radius_m,
+            max_gps_accuracy_m,
+            gps_required,
+            wifi_required,
+            allowed_ip
           `)
-          .eq(
-            'employee_id',
-            profile.id
-          )
-          .eq(
-            'is_active',
-            true
-          );
+          .eq('structure_id', profile.structure_id)
+          .eq('is_active', true)
+          .order('name');
 
-      if (error) {
-        throw error;
-      }
-
-      const result: SiteContext[] =
-        [];
-
-      for (const row of data ??
-        []) {
-        const site =
-          row.sites;
-
-        if (!site) {
-          continue;
+        if (structError) {
+          throw structError;
         }
 
-        result.push({
-          site_id: site.id,
-          site_name: site.name,
-          latitude:
-            site.latitude,
-          longitude:
-            site.longitude,
-          location_radius_m:
-            site.location_radius_m,
-          max_gps_accuracy_m:
-            site.max_gps_accuracy_m,
-          gps_required:
-            site.gps_required,
-          wifi_required:
-            site.wifi_required ??
-            false,
-          allowed_ip:
-            site.allowed_ip ??
-            null,
-        });
+        for (const site of structureSites ?? []) {
+          result.push({
+            site_id: site.id,
+            site_name: site.name,
+            latitude: site.latitude,
+            longitude: site.longitude,
+            location_radius_m: site.location_radius_m,
+            max_gps_accuracy_m: site.max_gps_accuracy_m,
+            gps_required: site.gps_required,
+            wifi_required: site.wifi_required ?? false,
+            allowed_ip: site.allowed_ip ?? null,
+          });
+        }
+      } else {
+        const {
+          data,
+          error,
+        } =
+          await supabase
+            .from('employee_sites')
+            .select(`
+              site_id,
+              sites (
+                id,
+                name,
+                latitude,
+                longitude,
+                location_radius_m,
+                max_gps_accuracy_m,
+                gps_required,
+                wifi_required,
+                allowed_ip
+              )
+            `)
+            .eq(
+              'employee_id',
+              profile.id
+            )
+            .eq(
+              'is_active',
+              true
+            );
+
+        if (error) {
+          throw error;
+        }
+
+        for (const row of data ?? []) {
+          const site = row.sites;
+          if (!site) continue;
+
+          result.push({
+            site_id: site.id,
+            site_name: site.name,
+            latitude: site.latitude,
+            longitude: site.longitude,
+            location_radius_m: site.location_radius_m,
+            max_gps_accuracy_m: site.max_gps_accuracy_m,
+            gps_required: site.gps_required,
+            wifi_required: site.wifi_required ?? false,
+            allowed_ip: site.allowed_ip ?? null,
+          });
+        }
       }
 
       setSites(result);
@@ -861,7 +888,7 @@ export default function Attendance() {
       }
 
       return result;
-    }, [profile]);
+    }, [profile, isRhManager]);
 
   /* ==========================================================
    * LOAD TODAY
@@ -1862,6 +1889,8 @@ export default function Attendance() {
         let gpsValidForSite =
           false;
 
+        let detectedOutSite: SiteContext | null = null;
+
         /* ======================================================
          * GPS
          * ==================================================== */
@@ -1876,14 +1905,18 @@ export default function Attendance() {
                 20000
               );
 
+            // Pour le Responsable RH itinérant, on teste le site du pointage ET tous les autres sites de sa structure
+            const candidateSites = isRhManager ? sites : [attendanceSite];
             const detected =
               detectAssignedSiteFromPosition(
                 position,
-                [attendanceSite]
+                candidateSites
               );
 
-            gpsValidForSite =
-              Boolean(detected);
+            if (detected) {
+              detectedOutSite = detected.site;
+              gpsValidForSite = true;
+            }
 
             if (
               !gpsValidForSite
@@ -2052,8 +2085,9 @@ export default function Attendance() {
 
         if (
           !networkSite ||
-          networkSite.site_id !==
-          attendanceSite.site_id
+          (isRhManager
+            ? !sites.some((s) => s.site_id === networkSite.site_id)
+            : networkSite.site_id !== attendanceSite.site_id)
         ) {
           throw new Error(
             'NETWORK_IP_NOT_ALLOWED'
@@ -3204,6 +3238,13 @@ export default function Attendance() {
             </h1>
 
             <div className="flex flex-wrap items-center gap-3 mt-2">
+              {isRhManager && (
+                <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20">
+                  <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                  Responsable RH • Pointage Itinérant Multi-Sites
+                </span>
+              )}
+
               {isOnline ? (
                 <span className="flex items-center gap-1 text-sm text-green-600">
                   <Wifi className="h-4 w-4" />
@@ -3381,7 +3422,9 @@ export default function Attendance() {
 
                   <div className="rounded-lg border bg-muted/30 p-4">
                     <p className="text-sm font-medium">
-                      Sites auxquels vous êtes affecté
+                      {isRhManager
+                        ? 'Sites autorisés pour votre pointage itinérant (Tous les sites de votre structure)'
+                        : 'Sites auxquels vous êtes affecté'}
                     </p>
 
                     <ul className="mt-2 space-y-2">

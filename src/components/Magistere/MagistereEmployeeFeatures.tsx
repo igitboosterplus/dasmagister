@@ -36,6 +36,8 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
+import { useSearchParams } from 'react-router-dom';
+
 export function MagistereEmployeeFeatures({
   employeeId,
   structureId,
@@ -43,36 +45,173 @@ export function MagistereEmployeeFeatures({
   employeeId: string;
   structureId: string;
 }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') || 'missions';
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
+
+  const [counts, setCounts] = useState({
+    activeMissions: 0,
+    totalMissions: 0,
+    pendingAbsences: 0,
+    totalAbsences: 0,
+    pendingReports: 0,
+    totalReports: 0,
+  });
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && ['missions', 'absences', 'doleances'].includes(tabParam)) {
+      setActiveTab(tabParam);
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', tab);
+      return next;
+    });
+  };
+
+  // Chargement des compteurs collaborateur
+  useEffect(() => {
+    if (!employeeId) return;
+
+    const fetchEmployeeCounts = async () => {
+      try {
+        const [missionsRes, absencesRes, reportsRes] = await Promise.all([
+          supabase.from('missions').select('id, status').eq('employee_id', employeeId),
+          supabase.from('employee_absences').select('id, status').eq('employee_id', employeeId),
+          supabase.from('reports').select('id, status').eq('employee_id', employeeId),
+        ]);
+
+        const mList = missionsRes.data || [];
+        const aList = absencesRes.data || [];
+        const rList = reportsRes.data || [];
+
+        setCounts({
+          activeMissions: mList.filter((m) => m.status === 'in_progress' || m.status === 'assigned').length,
+          totalMissions: mList.length,
+          pendingAbsences: aList.filter((a) => a.status === 'pending').length,
+          totalAbsences: aList.length,
+          pendingReports: rList.filter((r) => r.status === 'submitted').length,
+          totalReports: rList.length,
+        });
+      } catch (e) {
+        console.error('Erreur compteurs employé Magistère:', e);
+      }
+    };
+
+    fetchEmployeeCounts();
+  }, [employeeId]);
+
   return (
-    <div className="mt-8 border-t pt-8">
-      <div className="mb-6">
-        <h2 className="text-xl font-bold tracking-tight mb-2 flex items-center gap-2">
-          <Badge variant="outline" className="text-primary border-primary font-bold">
-            MAGISTÈRE
-          </Badge>
-          <span>Mon Espace Collaborateur</span>
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          Consultez vos missions, déclarez vos absences et suivez vos doléances.
-        </p>
+    <div className="space-y-6">
+      {/* Employee Quick Overview Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+        <button
+          onClick={() => handleTabChange('missions')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'missions'
+              ? 'border-primary bg-primary/5 shadow-sm'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Mes Missions
+            </span>
+            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
+              <MapPin className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-display text-foreground">
+              {counts.activeMissions}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              actives ({counts.totalMissions} au total)
+            </span>
+          </div>
+        </button>
+
+        <button
+          onClick={() => handleTabChange('absences')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'absences'
+              ? 'border-primary bg-primary/5 shadow-sm'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Mes Absences
+            </span>
+            <div className="p-2 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+              <CalendarDays className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-display text-foreground">
+              {counts.totalAbsences}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              posée{counts.totalAbsences > 1 ? 's' : ''} ({counts.pendingAbsences} en attente)
+            </span>
+          </div>
+        </button>
+
+        <button
+          onClick={() => handleTabChange('doleances')}
+          className={`p-4 rounded-xl border text-left transition-all group ${
+            activeTab === 'doleances'
+              ? 'border-primary bg-primary/5 shadow-sm'
+              : 'border-border/80 bg-card hover:bg-muted/40 hover:border-primary/40'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Mes Doléances
+            </span>
+            <div className="p-2 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400">
+              <FileText className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-display text-foreground">
+              {counts.totalReports}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              soumise{counts.totalReports > 1 ? 's' : ''} ({counts.pendingReports} en cours)
+            </span>
+          </div>
+        </button>
       </div>
 
-      <Tabs defaultValue="missions" className="w-full">
-        <TabsList className="mb-6 grid grid-cols-3 max-w-md">
-          <TabsTrigger value="missions">Mes Missions</TabsTrigger>
-          <TabsTrigger value="absences">Mes Absences</TabsTrigger>
-          <TabsTrigger value="doleances">Mes Doléances</TabsTrigger>
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+        <TabsList className="mb-6 grid grid-cols-3 max-w-md h-auto p-1 bg-muted/60 rounded-xl">
+          <TabsTrigger value="missions" className="text-xs sm:text-sm py-2 rounded-lg">
+            Mes Missions
+          </TabsTrigger>
+          <TabsTrigger value="absences" className="text-xs sm:text-sm py-2 rounded-lg">
+            Mes Absences
+          </TabsTrigger>
+          <TabsTrigger value="doleances" className="text-xs sm:text-sm py-2 rounded-lg">
+            Mes Doléances
+          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="missions">
+        <TabsContent value="missions" className="mt-0 focus-visible:outline-none">
           <EmployeeMissionsTab employeeId={employeeId} />
         </TabsContent>
 
-        <TabsContent value="absences">
+        <TabsContent value="absences" className="mt-0 focus-visible:outline-none">
           <EmployeeAbsencesTab employeeId={employeeId} structureId={structureId} />
         </TabsContent>
 
-        <TabsContent value="doleances">
+        <TabsContent value="doleances" className="mt-0 focus-visible:outline-none">
           <EmployeeReportsTab employeeId={employeeId} />
         </TabsContent>
       </Tabs>

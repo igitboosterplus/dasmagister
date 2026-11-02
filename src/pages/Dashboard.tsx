@@ -7,17 +7,20 @@ import { Users, Clock, AlertTriangle, CheckCircle } from 'lucide-react';
 import { redirect, useNavigate } from 'react-router-dom';
 
 export default function Dashboard() {
-  const { role, profile } = useAuth();
+  const { role, profile, isRhManager } = useAuth();
   const navigate = useNavigate();
 
-
   useEffect(() => {
-      if (role ) {
-        navigate( "/dashboard/"+role, {replace:true });
-        }
-      }, [role, navigate]);
-
-        return <></>;
+    if (role) {
+      if (isRhManager) {
+        navigate('/dashboard/manager', { replace: true });
+      } else {
+        navigate('/dashboard/' + role, { replace: true });
       }
+    }
+  }, [role, isRhManager, navigate]);
+
+  return <></>;
+}
 
 

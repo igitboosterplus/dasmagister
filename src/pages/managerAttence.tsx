@@ -267,7 +267,7 @@ const formatDuration = (
 // ============================================================
 
 export default function ManagerAttendanceReview() {
-  const { profile, role } = useAuth();
+  const { profile, role, isRhManager } = useAuth();
   const { toast } = useToast();
 
   // ----------------------------------------------------------
@@ -517,7 +517,8 @@ export default function ManagerAttendanceReview() {
   useEffect(() => {
     if (
       role !== 'manager' &&
-      role !== 'admin'
+      role !== 'admin' &&
+      !isRhManager
     ) {
       setLoading(false);
       return;
@@ -942,7 +943,8 @@ export default function ManagerAttendanceReview() {
 
   if (
     role !== 'manager' &&
-    role !== 'admin'
+    role !== 'admin' &&
+    !isRhManager
   ) {
     return (
       <DashboardLayout>

@@ -279,7 +279,7 @@ const formatCoordinate = (value: number | null) =>
 
 export default function ManagerSites() {
 
-  const { role, profile } = useAuth();
+  const { role, profile, isRhManager } = useAuth();
 
   // ----------------------------------------------------------
   // DATA
@@ -682,7 +682,7 @@ export default function ManagerSites() {
 
   useEffect(() => {
 
-    if (role !== 'manager') {
+    if (role !== 'manager' && !isRhManager) {
       setLoading(false);
       return;
     }
@@ -1740,7 +1740,7 @@ export default function ManagerSites() {
   // ACCESS GUARDS
   // ==========================================================
 
-  if (role !== 'manager') {
+  if (role !== 'manager' && !isRhManager) {
 
     return (
       <DashboardLayout>

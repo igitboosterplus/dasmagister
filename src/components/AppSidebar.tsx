@@ -71,6 +71,12 @@ const navItems: NavItem[] = [
     roles: ['manager'],
   },
   {
+    label: 'set',
+    icon: Settings,
+    path: '/settings',
+    roles: ['admin'],
+  },
+  {
     label: 'Rapports',
     icon: BarChart3,
     path: '/reports/employer',
@@ -102,7 +108,7 @@ const navItems: NavItem[] = [
 ];
 
 export default function AppSidebar() {
-  const { profile, role, signOut } = useAuth();
+  const { profile, role, isRhManager, signOut } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -172,6 +178,20 @@ export default function AppSidebar() {
   }, [profile?.id, profile?.structure_id, role]);
 
   const filteredItems = navItems.filter((item) => {
+    // Si l'utilisateur est Responsable RH, il a les pouvoirs du manager et pointe également
+    if (isRhManager) {
+      if (item.path === '/attendance') return true;
+      if (item.path === '/reports/employer') return false;
+      if (item.path === '/reports/manager') return true;
+      if (item.roles.includes('manager')) {
+        if (item.requiresDasSarlStructure) return isDasSarlStructure;
+        if (item.requiresMagistereStructure) return isMagistereStructure;
+        return true;
+      }
+      if (item.path === '/dashboard') return true;
+      return false;
+    }
+
     if (!role || !item.roles.includes(role)) return false;
     if (item.requiresSiteResponsibility) return isSiteResponsible;
     if (item.requiresDasSarlStructure) return isDasSarlStructure;
@@ -183,6 +203,7 @@ export default function AppSidebar() {
   const spaceNavItems = filteredItems.filter((i) => i.isSpace);
 
   const getRoleBadge = (r: string | null) => {
+    if (isRhManager) return 'Responsable RH (Manager)';
     const labels: Record<string, string> = {
       admin: 'Administrateur',
       manager: 'Manager',

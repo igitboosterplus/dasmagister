@@ -237,15 +237,15 @@ function isPdf(file?: Attachment | null) {
 ========================================================= */
 
 export default function ManagerReportsPage() {
-  const { profile, role, loading: authLoading } = useAuth()
+  const { profile, role, isRhManager, loading: authLoading } = useAuth()
   const navigate = useNavigate()
 
-  // Sécurité : redirection si l'utilisateur connecté n'est ni manager ni admin
+  // Sécurité : redirection si l'utilisateur connecté n'est ni manager ni admin ni Responsable RH
   useEffect(() => {
-    if (!authLoading && role && role !== 'manager' && role !== 'admin') {
+    if (!authLoading && role && role !== 'manager' && role !== 'admin' && !isRhManager) {
       navigate('/reports', { replace: true })
     }
-  }, [authLoading, role, navigate])
+  }, [authLoading, role, isRhManager, navigate])
 
   /* -------------------------------------------------------
      DATA
